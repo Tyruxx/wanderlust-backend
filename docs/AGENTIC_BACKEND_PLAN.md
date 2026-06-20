@@ -38,7 +38,8 @@ Minimum values before real service calls:
 - `GOOGLE_IOS_REVERSED_CLIENT_ID`
 - `GOOGLE_SERVER_CLIENT_ID` for backend audience checks when needed
 - Vertex AI service-account access, or `GOOGLE_API_KEY` for local Gemini fallback
-- Google Maps Platform key(s) for Places API (New), Routes API, Geocoding API, and Weather API
+- `GOOGLE_MAPS_BACKEND_API_KEY` for backend Places, Routes, Geocoding, and Weather web-service calls
+- `GOOGLE_MAPS_IOS_API_KEY` for Maps SDK for iOS / Flutter map UI calls
 
 Optional later:
 
@@ -115,6 +116,23 @@ Verification:
 - `.env` is ignored by Git.
 - `.env.example` contains placeholders only.
 - Git log contains only the sanitized root commit.
+
+### Step 1c: Split Google Maps Keys
+
+Status: Completed.
+
+Deliverables:
+
+- Added separate `GOOGLE_MAPS_BACKEND_API_KEY` and `GOOGLE_MAPS_IOS_API_KEY` fields.
+- Kept legacy Maps env fields for migration so existing local values still work.
+- Added a backend settings fallback that prefers the backend key, then legacy Maps keys.
+- Added ignore coverage for local service-account JSON files.
+
+Verification:
+
+- `.env` remains ignored.
+- `.env.example` contains placeholder values only.
+- Python source compiles.
 
 ### Step 2: Domain Models And Guardrail Services
 

@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash"
     google_api_key: str = ""
 
+    google_maps_backend_api_key: str = ""
+    google_maps_ios_api_key: str = ""
     google_maps_api_key: str = ""
     google_places_api_key: str = ""
     google_routes_api_key: str = ""
@@ -50,6 +52,17 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def maps_backend_api_key(self) -> str:
+        return (
+            self.google_maps_backend_api_key
+            or self.google_maps_api_key
+            or self.google_places_api_key
+            or self.google_routes_api_key
+            or self.google_geocoding_api_key
+            or self.google_weather_api_key
+        )
 
     @property
     def missing_required_values(self) -> list[str]:
