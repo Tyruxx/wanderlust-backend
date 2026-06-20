@@ -52,18 +52,18 @@ Optional later:
 ## Guardrail Checklist
 
 - [ ] Account onboarding required before first itinerary generation.
-- [ ] Preferences stored as structured data, not Markdown-only.
-- [ ] Preference changes increment a version and affect future agent runs.
-- [ ] Reset preferences redirects to onboarding and does not delete itineraries.
-- [ ] Only one itinerary may be ACTIVE.
-- [ ] Starting another itinerary requires explicit replacement.
-- [ ] INACTIVE and COMPLETED itineraries reject active location/event ingestion.
-- [ ] Stop and complete halt location, ambient workflows, suggestions, and dynamic behavior updates.
-- [ ] Agent chat cannot silently activate, stop, delete, export, book, or buy.
-- [ ] Itinerary recovery proposals require user acceptance before applying.
-- [ ] Recommendations include explanation/reasoning and source confidence.
-- [ ] Social sources are discovery signals only, never factual authority.
-- [ ] Booking, payment, and calls require explicit confirmation.
+- [x] Preferences stored as structured data, not Markdown-only.
+- [x] Preference changes increment a version and affect future agent runs.
+- [x] Reset preferences redirects to onboarding and does not delete itineraries.
+- [x] Only one itinerary may be ACTIVE.
+- [x] Starting another itinerary requires explicit replacement.
+- [x] INACTIVE and COMPLETED itineraries reject active location/event ingestion.
+- [x] Stop and complete halt location, ambient workflows, suggestions, and dynamic behavior updates.
+- [x] Agent chat cannot silently activate, stop, delete, export, book, or buy.
+- [x] Itinerary recovery proposals require user acceptance before applying.
+- [x] Recommendations include explanation/reasoning and source confidence.
+- [x] Social sources are discovery signals only, never factual authority.
+- [x] Booking, payment, and calls require explicit confirmation.
 
 ## Implementation Steps
 
@@ -136,14 +136,24 @@ Verification:
 
 ### Step 2: Domain Models And Guardrail Services
 
-Status: Pending.
+Status: Completed.
 
-Planned deliverables:
+Deliverables:
 
-- Pydantic models for preferences, trip details, itineraries, statuses, suggestions, agent outputs.
-- Deterministic lifecycle service enforcing one ACTIVE itinerary and INACTIVE/COMPLETED hard stops.
-- Preference versioning service.
-- Unit tests for lifecycle and preference guardrails.
+- Added Pydantic domain models for preferences, dynamic behavior preferences, trip briefs, day rules, itineraries, day plans, stops, recommendations, source evidence, agent action types, and service commands.
+- Added deterministic lifecycle guardrails for ACTIVE, INACTIVE, and COMPLETED status transitions.
+- Added single-active-itinerary enforcement with explicit replacement confirmation.
+- Added stop/complete service commands that halt location collection, event ingestion, ambient workflows, active suggestions, and dynamic behavior updates.
+- Added preference versioning guardrails for updates, reset, stale workflow detection, and explicit user action when saving itinerary preference patterns.
+- Added explicit-confirmation guardrails for agent actions that activate, stop, complete, delete, export, book, buy, place calls, apply recovery, or save itinerary patterns.
+- Added recommendation guardrails requiring explanation and rejecting low-confidence social-only recommendations.
+- Added standard-library unit tests for lifecycle, preference, action, and recommendation guardrails.
+
+Verification:
+
+- `python3` source syntax compilation passes.
+- Bundled project runtime runs `python -m unittest discover -s tests`: 11 tests pass.
+- System `/usr/bin/python3` cannot run tests because it lacks project dependency `pydantic`; backend target remains Python 3.11+ per `pyproject.toml`.
 
 ### Step 3: Auth And Persistence
 
@@ -200,3 +210,4 @@ Planned deliverables:
 ## Progress Log
 
 - Step 1 completed: backend scaffold, `.env`, and handoff plan created.
+- Step 2 completed: domain models, deterministic guardrail services, and 11 unit tests added.
