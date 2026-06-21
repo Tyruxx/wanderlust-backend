@@ -14,3 +14,5 @@ build/
 .env.*.local
 *.json
 !*.example.json
+wanderlust.db
+wanderlust.db-*
