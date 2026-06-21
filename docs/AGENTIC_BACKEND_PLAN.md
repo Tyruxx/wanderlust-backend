@@ -296,6 +296,42 @@ Verification:
 - Guardrail review against `../specs/` confirms deployment/runtime wiring preserves:
   local preference onboarding before itinerary generation, single ACTIVE itinerary state, no active event posting for INACTIVE/COMPLETED itineraries, explicit start/stop/complete lifecycle actions, server-side Maps key isolation, social sources as discovery-only, and recovery proposals requiring user acceptance.
 
+### Step 7a: Remove Superseded Identity Scaffolding
+
+Status: Completed.
+
+Deliverables:
+
+- Removed Firebase Auth dependency: replaced `FirebaseAuthService` and `get_current_user` bearer-token
+  dependency with a simple `X-User-Id` header-based request context. The backend now accepts a user ID
+  directly from the Flutter app without requiring Firebase Admin SDK token verification.
+- Removed `firebase-admin` from `pyproject.toml`.
+- Removed Firebase-related settings (`firebase_project_id`, `firebase_web_api_key`,
+  `google_ios_client_id`, `google_server_client_id`, `jwt_audience`, etc.) from `Settings` and
+  `.env.example`.
+- Removed `UserProfile` model and `UserRepository` from `repositories.py` as they were only used for
+  the superseded identity direction.
+- Removed `MockFirebaseAuthService` and associated tests.
+- Updated Flutter backend client: replaced `FirebaseTokenProvider` + Bearer token with `X-User-Id`
+  header. Removed `firebaseIdTokenForDebug` from `AppConfig`; added `userId` (defaulting to
+  `device-user`) with overridable `DEVICE_USER_ID` environment variable.
+- Removed `canUseBackendApi` Firebase-debug-token guard; backend client is now usable whenever a
+  `BACKEND_BASE_URL` is configured.
+- Updated `readyz` endpoint to remove `guardrail_mode` scaffolding note.
+- Updated `missing_required_values` to no longer require Firebase project ID.
+
+Production path is now entirely real: ADK agents, Gemini planner, Google Maps Platform (Places,
+Routes, Geocoding, Weather), Google Cloud Firestore, and Google Cloud Pub/Sub are all wired as real
+service clients. No mocks or fakes remain in production code paths. Test doubles remain in unit tests
+only.
+
+Verification:
+
+- Full unit/API/contract suite passes: `python -m unittest discover -s tests` runs 33 tests.
+- Ruff passes for `app`, `tests`, and `scripts`.
+- Python source compiles with Python 3.11+.
+- Flutter source uses `X-User-Id` header instead of Bearer token.
+
 ### Step 8: End-To-End Functional Validation
 
 Status: Pending.
@@ -303,13 +339,17 @@ Status: Pending.
 Planned deliverables:
 
 - Complete local preference onboarding in the Flutter app and verify preferences remain device-local.
-- Run the Flutter app against the deployed backend and verify itinerary generation sends explicit request context without end-user identity tokens.
+- Run the Flutter app against the deployed backend and verify itinerary generation sends explicit
+  request context (X-User-Id header) without end-user identity tokens.
 - Generate an itinerary through the real API path using Firestore, ADK/Vertex, and Google Maps Platform.
-- Start the itinerary, ingest a representative ACTIVE location event through Pub/Sub, and verify dynamic preference/recovery behavior is persisted without violating guardrails.
-- Stop and mark the itinerary completed, verifying active services halt and subsequent active events are rejected.
+- Start the itinerary, ingest a representative ACTIVE location event through Pub/Sub, and verify
+  dynamic preference/recovery behavior is persisted without violating guardrails.
+- Stop and mark the itinerary completed, verifying active services halt and subsequent active events
+  are rejected.
 - Verify the Flutter app reflects backend state for saved itineraries, ACTIVE/INACTIVE/COMPLETED
   status, recovery proposal accept/reject, and preference version changes.
-- Produce a handoff runbook with exact commands, required env values, smoke-test evidence, known limitations, and remaining production hardening tasks.
+- Produce a handoff runbook with exact commands, required env values, smoke-test evidence, known
+  limitations, and remaining production hardening tasks.
 
 ## Progress Log
 
@@ -321,4 +361,5 @@ Planned deliverables:
 - Step 5 completed: ADK/Gemini planning workflow, real Google Maps wrappers, generation endpoint, gated integration smoke script, and 5 new tests added (34 total).
 - Step 6 completed: ACTIVE-only location-event ingestion, Pub/Sub publisher, dynamic preference update, recovery proposal contracts, Flutter integration plan updates, and 2 new API scenarios added (36 total).
 - Step 7 completed: Cloud Run deployment assets, Secret Manager/IAM setup script, deployment runbook, and Flutter backend API integration boundary added.
-- Local-first pivot recorded: end-user identity-provider flows are no longer required; preferences and saved itineraries are device-local, and backend agent calls should use explicit request context.
+- Step 7a completed: removed superseded Firebase identity scaffolding, switched to X-User-Id header auth, removed firebase-admin dependency, cleaned up settings and .env.example, updated Flutter client to send X-User-Id. All production code paths are now real (ADK, Gemini, Maps, Firestore, Pub/Sub). 33 tests, Ruff clean.
+- Local-first pivot fully implemented: end-user identity-provider flows are removed; preferences and saved itineraries are device-local; backend agent calls use explicit request context (X-User-Id header).

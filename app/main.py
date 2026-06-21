@@ -45,5 +45,4 @@ def readyz() -> dict[str, object]:
     return {
         "ready": not missing,
         "missing_required_values": missing,
-        "guardrail_mode": "planning_scaffold",
     }

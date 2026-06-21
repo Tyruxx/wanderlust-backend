@@ -99,7 +99,6 @@ class ApiRouteTests(unittest.TestCase):
         self.recovery_proposals: InMemoryRepository[RecoveryProposal] = InMemoryRepository()
         self.audit_logs: InMemoryRepository[AuditLogEntry] = InMemoryRepository()
         self.repositories = RepositoryBundle(
-            users=InMemoryRepository(),  # type: ignore[arg-type]
             preferences=self.preferences,  # type: ignore[arg-type]
             itineraries=self.itineraries,  # type: ignore[arg-type]
             dynamic_preferences=self.dynamic_preferences,  # type: ignore[arg-type]

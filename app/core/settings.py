@@ -17,14 +17,6 @@ class Settings(BaseSettings):
 
     google_cloud_project: str = ""
     google_cloud_region: str = "asia-southeast1"
-    firebase_project_id: str = ""
-    firebase_web_api_key: str = ""
-    firebase_ios_bundle_id: str = "com.example.wanderlustTrip"
-    google_ios_client_id: str = ""
-    google_ios_reversed_client_id: str = ""
-    google_server_client_id: str = ""
-    google_android_client_id: str = ""
-    google_web_client_id: str = ""
 
     use_vertex_ai: bool = True
     vertex_ai_location: str = "asia-southeast1"
@@ -44,7 +36,6 @@ class Settings(BaseSettings):
     pubsub_agent_runs_topic: str = "agent-runs"
     pubsub_notifications_topic: str = "notifications"
 
-    jwt_audience: str = ""
     log_level: str = "INFO"
     request_timeout_seconds: int = 30
     agent_timeout_seconds: int = 60
@@ -66,14 +57,12 @@ class Settings(BaseSettings):
 
     @property
     def missing_required_values(self) -> list[str]:
-        required = {
-            "GOOGLE_CLOUD_PROJECT": self.google_cloud_project,
-            "FIREBASE_PROJECT_ID": self.firebase_project_id,
-        }
-        if self.use_vertex_ai:
-            required["VERTEX_AI_LOCATION"] = self.vertex_ai_location
-        elif not self.google_api_key:
-            required["GOOGLE_API_KEY"] = self.google_api_key
+        required: dict[str, str] = {}
+        if self.google_cloud_project:
+            if self.use_vertex_ai and not self.vertex_ai_location:
+                required["VERTEX_AI_LOCATION"] = self.vertex_ai_location
+        else:
+            required["GOOGLE_CLOUD_PROJECT"] = self.google_cloud_project
         return [key for key, value in required.items() if not value]
 
 

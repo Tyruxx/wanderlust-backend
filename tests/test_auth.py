@@ -1,34 +1,26 @@
 import unittest
 
-from app.services.auth import MockFirebaseAuthService, VerifiedUser
+from app.api.dependencies import get_current_user
+
+from fastapi import HTTPException
 
 
-class MockFirebaseAuthServiceTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.user = VerifiedUser(
-            uid="user-1",
-            email="alice@example.com",
-            name="Alice",
-        )
-        self.service = MockFirebaseAuthService(users={"user-1": self.user})
+class HeaderAuthTests(unittest.TestCase):
+    def test_x_user_id_header_returns_verified_user(self) -> None:
+        user = get_current_user(x_user_id="user-1")
+        self.assertEqual(user.uid, "user-1")
 
-    def test_verify_token_returns_verified_user(self) -> None:
-        self.service.set_token("valid-token", "user-1")
-        result = self.service.verify_token("valid-token")
-        self.assertEqual(result.uid, "user-1")
-        self.assertEqual(result.email, "alice@example.com")
+    def test_x_user_id_with_spaces_is_stripped(self) -> None:
+        user = get_current_user(x_user_id="  user-1  ")
+        self.assertEqual(user.uid, "user-1")
 
-    def test_verify_token_raises_for_invalid_token(self) -> None:
-        with self.assertRaises(ValueError):
-            self.service.verify_token("bad-token")
+    def test_empty_x_user_id_raises(self) -> None:
+        with self.assertRaises(HTTPException):
+            get_current_user(x_user_id="")
 
-    def test_get_user_returns_user(self) -> None:
-        result = self.service.get_user("user-1")
-        self.assertEqual(result.uid, "user-1")
-
-    def test_get_user_raises_for_missing_user(self) -> None:
-        with self.assertRaises(ValueError):
-            self.service.get_user("nobody")
+    def test_blank_x_user_id_raises(self) -> None:
+        with self.assertRaises(HTTPException):
+            get_current_user(x_user_id="   ")
 
 
 if __name__ == "__main__":

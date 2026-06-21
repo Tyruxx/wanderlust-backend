@@ -89,15 +89,6 @@ class FirestoreRepository(Generic[T]):
             raise _SerializationError(f"Failed to deserialize {self._model_cls.__name__}") from exc
 
 
-class UserProfile(BaseModel):
-    uid: str
-    email: str = ""
-    display_name: str = ""
-    photo_url: str = ""
-    created_at: str = ""
-    auth_provider: str = "google.com"
-
-
 class AuditLogEntry(BaseModel):
     event_id: str
     user_id: str
@@ -106,11 +97,6 @@ class AuditLogEntry(BaseModel):
     target_id: str
     timestamp: str = ""
     details: str = ""
-
-
-class UserRepository(FirestoreRepository[UserProfile]):
-    def __init__(self) -> None:
-        super().__init__("users", UserProfile)
 
 
 class TravelPreferencesRepository(FirestoreRepository[TravelPreferences]):

@@ -1,10 +1,9 @@
 from dataclasses import dataclass
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Header, HTTPException, status
 
 from app.services.active_events import ActiveEventWorkflowService, get_active_event_workflow_service
-from app.services.auth import FirebaseAuthService, VerifiedUser
+from app.services.auth import VerifiedUser
 from app.services.repositories import (
     AuditLogRepository,
     DynamicPreferencesRepository,
@@ -13,17 +12,12 @@ from app.services.repositories import (
     RecommendationRepository,
     RecoveryProposalRepository,
     TravelPreferencesRepository,
-    UserRepository,
 )
 from app.services.planning import ADKPlanningWorkflowService, get_planning_workflow_service
 
 
-bearer_scheme = HTTPBearer(auto_error=False)
-
-
 @dataclass
 class RepositoryBundle:
-    users: UserRepository
     preferences: TravelPreferencesRepository
     itineraries: ItineraryRepository
     dynamic_preferences: DynamicPreferencesRepository
@@ -33,31 +27,19 @@ class RepositoryBundle:
     audit_logs: AuditLogRepository
 
 
-def get_auth_service() -> FirebaseAuthService:
-    return FirebaseAuthService()
-
-
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    auth_service: FirebaseAuthService = Depends(get_auth_service),
+    x_user_id: str = Header(..., alias="X-User-Id"),
 ) -> VerifiedUser:
-    if credentials is None or credentials.scheme.lower() != "bearer":
+    if not x_user_id.strip():
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Bearer token is required.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-User-Id header is required.",
         )
-    try:
-        return auth_service.verify_token(credentials.credentials)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired Firebase ID token.",
-        ) from exc
+    return VerifiedUser(uid=x_user_id.strip())
 
 
 def get_repositories() -> RepositoryBundle:
     return RepositoryBundle(
-        users=UserRepository(),
         preferences=TravelPreferencesRepository(),
         itineraries=ItineraryRepository(),
         dynamic_preferences=DynamicPreferencesRepository(),
