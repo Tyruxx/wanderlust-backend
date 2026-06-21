@@ -17,6 +17,7 @@ from app.services.repositories import (
 class TravelPreferencesRepositoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = TravelPreferencesRepository()
+        self.repo.clear()
 
     def test_get_by_user_returns_preferences(self) -> None:
         prefs = TravelPreferences(
@@ -60,6 +61,7 @@ class TravelPreferencesRepositoryTests(unittest.TestCase):
 class ItineraryRepositoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = ItineraryRepository()
+        self.repo.clear()
 
     def _make_itinerary(
         self,
