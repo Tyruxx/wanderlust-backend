@@ -23,6 +23,22 @@ guardrails in `../specs/` before invoking agents or external tools.
 - Secret Manager stores API keys.
 - Cloud Run hosts the backend service.
 
+## Functional Completion Bar
+
+This plan must end with a working app backed by real external services, not only
+mocked interfaces. Test doubles remain allowed for unit tests, but the completed
+backend must support the following production path:
+
+- Flutter signs in with Google/Firebase and calls FastAPI with a real Firebase ID token.
+- FastAPI verifies the token with Firebase Admin using Application Default Credentials.
+- Preferences, itineraries, recommendations, evidence, and audit logs persist in Firestore.
+- Itinerary generation calls Google ADK/Vertex AI and real Google Maps Platform APIs.
+- ACTIVE itinerary events publish through Pub/Sub and trigger ACTIVE-only backend handling.
+- Runtime secrets are read from Secret Manager or Cloud Run environment bindings.
+- Cloud Run deployment exposes a reachable backend URL for the Flutter app.
+- End-to-end smoke tests prove account onboarding, itinerary creation, start/stop/complete,
+  and at least one generated itinerary using real configured services.
+
 ## Required Environment Values
 
 The committed placeholder is `.env.example`. Real `.env` files are ignored and
@@ -157,13 +173,21 @@ Verification:
 
 ### Step 3: Auth And Persistence
 
-Status: Pending.
+Status: Completed.
 
-Planned deliverables:
+Deliverables:
 
-- Firebase ID-token verification dependency.
-- Firestore repositories for users, preferences, itineraries, dynamic preferences, evidence, audit logs.
-- API tests with mocked Firebase/Firestore clients.
+- Firebase ID-token verification service in `app/services/auth.py` with `FirebaseAuthService` (production via `firebase-admin`) and `MockFirebaseAuthService` (test double).
+- Firestore repository layer in `app/services/repositories.py` with:
+  - `FirestoreRepository[T]` generic base with create/get/update/delete/query
+  - `UserRepository`, `TravelPreferencesRepository`, `ItineraryRepository`
+  - `DynamicPreferencesRepository`, `EvidenceRepository`, `RecommendationRepository`, `AuditLogRepository`
+- `UserProfile` and `AuditLogEntry` Pydantic models.
+- Unit tests in `tests/test_auth.py` (4 tests) and `tests/test_repositories.py` (10 tests).
+
+Verification:
+
+- All 25 tests pass (`python -m unittest discover -s tests`): 11 guardrail + 4 auth + 10 repository tests.
 
 ### Step 4: Itinerary APIs
 
@@ -171,8 +195,12 @@ Status: Pending.
 
 Planned deliverables:
 
-- REST routes for preferences, itinerary CRUD, start/stop/complete, save itinerary preference, export request.
-- Guardrail-backed API tests.
+- REST routes for authenticated preferences, itinerary CRUD, start/stop/complete, delete, export request, and save itinerary preference pattern.
+- FastAPI auth dependency that verifies real Firebase ID tokens through `FirebaseAuthService` outside `APP_ENV=test`.
+- Firestore-backed route handlers using the Step 3 repositories; mocks are limited to tests.
+- Account-onboarding guard on first itinerary generation: users without completed preferences cannot generate itineraries.
+- Lifecycle route behavior backed by Step 2 guardrails, including single ACTIVE itinerary and stop/complete service commands.
+- API tests with mocked Firebase/Firestore plus one documented manual smoke path using a real Firebase ID token and Firestore project.
 
 ### Step 5: ADK Planning Workflow
 
@@ -180,10 +208,12 @@ Status: Pending.
 
 Planned deliverables:
 
-- Trip intake, discovery, verification, and planner agents.
-- Graph workflow for itinerary generation.
-- Google Maps tool wrappers with mockable interfaces.
-- Contract tests with fixed fixtures.
+- Trip intake, place discovery, verification, and planner agents implemented through Google ADK/Vertex AI.
+- Graph workflow that converts a `TripBrief` plus structured preferences into persisted `Itinerary` records.
+- Real Google Maps Platform tool wrappers for Places, Routes, Geocoding, and Weather using `GOOGLE_MAPS_BACKEND_API_KEY`.
+- Source-evidence persistence for Maps, official web/search-grounded evidence, and compliant social-source candidates only when credentials are configured.
+- Recommendation validation before persistence: explanation required, confidence required, low-confidence social-only results suppressed or marked exploratory.
+- Contract tests with fixed fixtures plus a gated integration smoke command that calls Vertex/ADK and Maps when real credentials are present.
 
 ### Step 6: Active Event Workflow
 
@@ -191,10 +221,12 @@ Status: Pending.
 
 Planned deliverables:
 
-- Location-event ingestion route.
-- Pub/Sub publishing.
-- ACTIVE-only ambient workflow entrypoint.
-- Dynamic preference and recovery proposal contracts.
+- Authenticated location-event ingestion route that rejects INACTIVE and COMPLETED itineraries before publishing anything.
+- Pub/Sub publisher wired to `PUBSUB_LOCATION_EVENTS_TOPIC` with a local/test fake only under test.
+- ACTIVE-only event handler that loads current itinerary, preferences, and dynamic behavior from Firestore before invoking ADK ambient logic.
+- Dynamic preference updates persisted in Firestore with versioning and immediate preference-version checks.
+- Recovery proposal creation that never mutates the itinerary until the user accepts it through an explicit API action.
+- Integration smoke path proving a real Pub/Sub message can be published and processed for an ACTIVE itinerary.
 
 ### Step 7: Deployment
 
@@ -203,11 +235,28 @@ Status: Pending.
 Planned deliverables:
 
 - Dockerfile.
-- Cloud Run deployment notes/commands.
-- Secret Manager setup notes.
-- CI check command list.
+- Cloud Run service configured with the backend service account, Firebase/Firestore/Vertex/Pub/Sub/Secret Manager permissions, and production environment variables.
+- Secret Manager setup for Google Maps backend key, optional Gemini key, social-source credentials, and Stripe credentials when enabled.
+- Cloud Run deployment commands and rollback notes.
+- Flutter runtime configuration pointing to the deployed backend URL for iOS builds.
+- CI check command list for unit tests, API tests, and gated integration smoke tests.
+- Production readiness checklist covering IAM, API enablement, CORS, Firebase token verification, Firestore writes, Maps calls, Vertex/ADK calls, Pub/Sub publish/consume, and guardrail audit logs.
+
+### Step 8: End-To-End Functional Validation
+
+Status: Pending.
+
+Planned deliverables:
+
+- Seed or create a real Firebase test user and complete onboarding through the app/backend.
+- Generate an itinerary through the real API path using Firestore, ADK/Vertex, and Google Maps Platform.
+- Start the itinerary, ingest a representative ACTIVE location event through Pub/Sub, and verify dynamic preference/recovery behavior is persisted without violating guardrails.
+- Stop and mark the itinerary completed, verifying active services halt and subsequent active events are rejected.
+- Produce a handoff runbook with exact commands, required env values, smoke-test evidence, known limitations, and remaining production hardening tasks.
 
 ## Progress Log
 
 - Step 1 completed: backend scaffold, `.env`, and handoff plan created.
 - Step 2 completed: domain models, deterministic guardrail services, and 11 unit tests added.
+- Step 3 completed: Firebase auth service, Firestore repository layer, and 14 new tests (25 total).
+- Plan updated after Step 3: remaining steps now require real Firebase, Firestore, Google Maps, ADK/Vertex, Pub/Sub, Secret Manager, Cloud Run, and Flutter integration before the backend is considered complete.
