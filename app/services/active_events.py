@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from google.cloud import pubsub_v1
-
-from app.core.settings import get_settings
 from app.domain.models import (
     ActiveEventIngestionResult,
     AgentActionType,
@@ -26,6 +23,8 @@ from app.services.repositories import (
     TravelPreferencesRepository,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class PubSubPublishError(RuntimeError):
     pass
@@ -39,33 +38,28 @@ class ActiveEventRepositoryBundle:
     recovery_proposals: RecoveryProposalRepository
 
 
-class PubSubLocationEventPublisher:
-    def __init__(self) -> None:
-        settings = get_settings()
-        self.project_id = settings.google_cloud_project
-        self.topic_name = settings.pubsub_location_events_topic
-        self.publisher = pubsub_v1.PublisherClient()
-
+class LocalLocationEventPublisher:
     def publish(self, event: LocationEvent) -> str:
-        if not self.project_id:
-            raise PubSubPublishError("GOOGLE_CLOUD_PROJECT is required to publish Pub/Sub events.")
-        topic_path = self.publisher.topic_path(self.project_id, self.topic_name)
-        future = self.publisher.publish(
-            topic_path,
-            json.dumps(event.model_dump(mode="json")).encode("utf-8"),
-            itinerary_id=event.itinerary_id,
-            user_id=event.user_id,
+        event_id = event.id or f"local-{uuid4().hex}"
+        logger.info(
+            "LOCAL EVENT published id=%s itinerary=%s user=%s lat=%s lng=%s deviation=%s",
+            event_id,
+            event.itinerary_id,
+            event.user_id,
+            event.location.latitude,
+            event.location.longitude,
+            event.deviation_detected,
         )
-        return str(future.result())
+        return event_id
 
 
 class ActiveEventWorkflowService:
     def __init__(
         self,
         *,
-        publisher: PubSubLocationEventPublisher | None = None,
+        publisher: LocalLocationEventPublisher | None = None,
     ) -> None:
-        self.publisher = publisher or PubSubLocationEventPublisher()
+        self.publisher = publisher or LocalLocationEventPublisher()
         self.lifecycle = ItineraryLifecycleService()
 
     def ingest_location_event(

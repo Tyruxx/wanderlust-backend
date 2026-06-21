@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from typing import Generic, TypeVar
 
-from google.cloud import firestore
 from pydantic import BaseModel
 
-from app.core.settings import get_settings
 from app.domain.models import (
     DynamicBehaviorPreferences,
     Itinerary,
@@ -19,74 +17,39 @@ from app.domain.models import (
 
 T = TypeVar("T", bound=BaseModel)
 
-COLLECTION_PREFIX = "wanderlust"
-
 
 class _SerializationError(RuntimeError):
     pass
 
 
-class FirestoreRepository(Generic[T]):
-    def __init__(self, collection_name: str, model_cls: type[T]) -> None:
-        settings = get_settings()
-        if settings.app_env == "test":
-            self._db: firestore.Client | None = None
-        else:
-            self._db = firestore.Client(
-                project=settings.google_cloud_project,
-                database=settings.firestore_database_id,
-            )
-        self._collection_ref = COLLECTION_PREFIX + "__" + collection_name
+class LocalRepository(Generic[T]):
+    def __init__(self, model_cls: type[T]) -> None:
+        self._store: dict[str, T] = {}
         self._model_cls = model_cls
 
-    @property
-    def _col(self) -> firestore.CollectionReference:
-        if self._db is None:
-            raise RuntimeError("Firestore client not available in test environment")
-        return self._db.collection(self._collection_ref)
-
-    def _doc_ref(self, doc_id: str) -> firestore.DocumentReference:
-        return self._col.document(doc_id)
-
     def create(self, doc_id: str, model: T) -> T:
-        self._doc_ref(doc_id).set(self._to_dict(model))
+        self._store[doc_id] = model
         return model
 
     def get(self, doc_id: str) -> T | None:
-        snapshot = self._doc_ref(doc_id).get()
-        if snapshot.exists is not True:
-            return None
-        data = snapshot.to_dict()
-        if data is None:
-            return None
-        return self._from_dict(data, doc_id)
+        return self._store.get(doc_id)
 
     def update(self, doc_id: str, model: T) -> T:
-        self._doc_ref(doc_id).set(self._to_dict(model))
+        self._store[doc_id] = model
         return model
 
     def delete(self, doc_id: str) -> None:
-        self._doc_ref(doc_id).delete()
+        self._store.pop(doc_id, None)
 
     def query_by_field(self, field: str, value: object) -> list[T]:
-        docs = self._col.where(field, "==", value).stream()
-        return [self._from_dict(doc.to_dict(), doc.id) for doc in docs]
+        return [
+            model
+            for model in self._store.values()
+            if getattr(model, field, None) == value
+        ]
 
     def list_all(self) -> list[T]:
-        docs = self._col.stream()
-        return [self._from_dict(doc.to_dict(), doc.id) for doc in docs]
-
-    def _to_dict(self, model: T) -> dict[str, object]:
-        raw: dict[str, object] = model.model_dump(mode="json", exclude={"id"})
-        return _normalize_firestore(raw)
-
-    def _from_dict(self, data: dict[str, object], doc_id: str) -> T:
-        data = dict(data)
-        data["id"] = doc_id
-        try:
-            return self._model_cls.model_validate(data)
-        except Exception as exc:
-            raise _SerializationError(f"Failed to deserialize {self._model_cls.__name__}") from exc
+        return list(self._store.values())
 
 
 class AuditLogEntry(BaseModel):
@@ -99,9 +62,9 @@ class AuditLogEntry(BaseModel):
     details: str = ""
 
 
-class TravelPreferencesRepository(FirestoreRepository[TravelPreferences]):
+class TravelPreferencesRepository(LocalRepository[TravelPreferences]):
     def __init__(self) -> None:
-        super().__init__("preferences", TravelPreferences)
+        super().__init__(TravelPreferences)
 
     def get_by_user(self, user_id: str) -> TravelPreferences | None:
         direct = self.get(user_id)
@@ -111,9 +74,9 @@ class TravelPreferencesRepository(FirestoreRepository[TravelPreferences]):
         return results[0] if results else None
 
 
-class ItineraryRepository(FirestoreRepository[Itinerary]):
+class ItineraryRepository(LocalRepository[Itinerary]):
     def __init__(self) -> None:
-        super().__init__("itineraries", Itinerary)
+        super().__init__(Itinerary)
 
     def find_by_user(self, user_id: str) -> list[Itinerary]:
         return self.query_by_field("user_id", user_id)
@@ -126,27 +89,27 @@ class ItineraryRepository(FirestoreRepository[Itinerary]):
         return None
 
 
-class DynamicPreferencesRepository(FirestoreRepository[DynamicBehaviorPreferences]):
+class DynamicPreferencesRepository(LocalRepository[DynamicBehaviorPreferences]):
     def __init__(self) -> None:
-        super().__init__("dynamic_preferences", DynamicBehaviorPreferences)
+        super().__init__(DynamicBehaviorPreferences)
 
     def get_by_itinerary(self, itinerary_id: str) -> DynamicBehaviorPreferences | None:
         return self.get(itinerary_id)
 
 
-class EvidenceRepository(FirestoreRepository[SourceEvidence]):
+class EvidenceRepository(LocalRepository[SourceEvidence]):
     def __init__(self) -> None:
-        super().__init__("evidence", SourceEvidence)
+        super().__init__(SourceEvidence)
 
 
-class RecommendationRepository(FirestoreRepository[Recommendation]):
+class RecommendationRepository(LocalRepository[Recommendation]):
     def __init__(self) -> None:
-        super().__init__("recommendations", Recommendation)
+        super().__init__(Recommendation)
 
 
-class RecoveryProposalRepository(FirestoreRepository[RecoveryProposal]):
+class RecoveryProposalRepository(LocalRepository[RecoveryProposal]):
     def __init__(self) -> None:
-        super().__init__("recovery_proposals", RecoveryProposal)
+        super().__init__(RecoveryProposal)
 
     def find_pending_by_itinerary(self, itinerary_id: str) -> list[RecoveryProposal]:
         return [
@@ -156,20 +119,6 @@ class RecoveryProposalRepository(FirestoreRepository[RecoveryProposal]):
         ]
 
 
-class AuditLogRepository(FirestoreRepository[AuditLogEntry]):
+class AuditLogRepository(LocalRepository[AuditLogEntry]):
     def __init__(self) -> None:
-        super().__init__("audit_logs", AuditLogEntry)
-
-
-def _normalize_firestore(data: dict[str, object]) -> dict[str, object]:
-    cleaned: dict[str, object] = {}
-    for key, value in data.items():
-        if isinstance(value, dict):
-            cleaned[key] = _normalize_firestore(value)
-        elif isinstance(value, list):
-            cleaned[key] = [_normalize_firestore(v) if isinstance(v, dict) else v for v in value]
-        elif isinstance(value, BaseModel):
-            cleaned[key] = _normalize_firestore(value.model_dump(mode="python"))
-        else:
-            cleaned[key] = value
-    return cleaned
+        super().__init__(AuditLogEntry)

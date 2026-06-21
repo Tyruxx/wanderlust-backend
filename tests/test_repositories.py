@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, patch
 
 from app.domain.models import (
     Itinerary,
@@ -16,183 +15,124 @@ from app.services.repositories import (
 
 
 class TravelPreferencesRepositoryTests(unittest.TestCase):
-    @patch("google.cloud.firestore.Client")
-    def test_get_by_user_returns_preferences(self, mock_firestore: MagicMock) -> None:
-        mock_snapshot = MagicMock()
-        mock_snapshot.exists = True
-        mock_snapshot.id = "pref-1"
-        mock_snapshot.to_dict.return_value = {
-            "user_id": "user-1",
-            "version": 2,
-            "onboarding_required": False,
-            "pace": "balanced",
-            "interests": ["food", "photography"],
-            "budget_posture": "flexible",
-            "day_rhythm": "flexible",
-            "social_discovery_enabled": False,
-            "saved_itinerary_patterns": [],
-            "dietary_preferences": [],
-            "accessibility_needs": [],
-        }
+    def setUp(self) -> None:
+        self.repo = TravelPreferencesRepository()
 
-        mock_doc = MagicMock()
-        mock_doc.get.return_value = mock_snapshot
-        mock_collection = MagicMock()
-        mock_collection.where.return_value.stream.return_value = [mock_snapshot]
-        mock_firestore.return_value.collection.return_value = mock_collection
+    def test_get_by_user_returns_preferences(self) -> None:
+        prefs = TravelPreferences(
+            user_id="user-1",
+            version=2,
+            onboarding_required=False,
+            pace="balanced",
+            interests=["food", "photography"],
+        )
+        self.repo.create("user-1", prefs)
 
-        repo = TravelPreferencesRepository()
-        result = repo.get_by_user("user-1")
-
+        result = self.repo.get_by_user("user-1")
         self.assertIsNotNone(result)
         if result:
             self.assertEqual(result.user_id, "user-1")
             self.assertEqual(result.version, 2)
             self.assertFalse(result.onboarding_required)
 
-    @patch("google.cloud.firestore.Client")
-    def test_get_by_user_returns_none_when_missing(self, mock_firestore: MagicMock) -> None:
-        mock_collection = MagicMock()
-        mock_collection.where.return_value.stream.return_value = []
-        mock_firestore.return_value.collection.return_value = mock_collection
-
-        repo = TravelPreferencesRepository()
-        result = repo.get_by_user("user-1")
+    def test_get_by_user_returns_none_when_missing(self) -> None:
+        result = self.repo.get_by_user("user-1")
         self.assertIsNone(result)
 
-    @patch("google.cloud.firestore.Client")
-    def test_update_preferences_increments_version(self, mock_firestore: MagicMock) -> None:
-        mock_doc = MagicMock()
-        mock_doc.set.return_value = None
-        mock_collection = MagicMock()
-        mock_collection.document.return_value = mock_doc
-        mock_firestore.return_value.collection.return_value = mock_collection
-
-        repo = TravelPreferencesRepository()
+    def test_update_preferences_increments_version(self) -> None:
         prefs = TravelPreferences(
             user_id="user-1",
             version=3,
             pace="relaxed",
             interests=["coffee"],
         )
-        repo.update("pref-1", prefs)
-        mock_doc.set.assert_called_once()
+        self.repo.create("user-1", prefs)
+
+        updated = prefs.model_copy(update={"version": 4})
+        self.repo.update("user-1", updated)
+
+        result = self.repo.get_by_user("user-1")
+        self.assertIsNotNone(result)
+        if result:
+            self.assertEqual(result.version, 4)
 
 
 class ItineraryRepositoryTests(unittest.TestCase):
-    @patch("google.cloud.firestore.Client")
-    def test_find_by_user_returns_user_itineraries(self, mock_firestore: MagicMock) -> None:
-        mock_snapshot = MagicMock()
-        mock_snapshot.exists = True
-        mock_snapshot.id = "itin-1"
-        mock_snapshot.to_dict.return_value = {
-            "user_id": "user-1",
-            "title": "Tokyo Trip",
-            "status": "INACTIVE",
-            "preference_version": 1,
-            "brief": {
-                "region": "Tokyo",
-                "description": "Food trip",
-                "trip_length_days": 3,
-                "include_regions": [],
-                "avoid_regions": [],
-                "traveler_count": 1,
-                "day_rules": [],
-                "constraints": [],
-                "must_visit_places": [],
-            },
-            "days": [],
-        }
+    def setUp(self) -> None:
+        self.repo = ItineraryRepository()
 
-        mock_collection = MagicMock()
-        mock_collection.where.return_value.stream.return_value = [mock_snapshot]
-        mock_firestore.return_value.collection.return_value = mock_collection
+    def _make_itinerary(
+        self,
+        doc_id: str,
+        user_id: str = "user-1",
+        title: str = "Trip",
+        status: ItineraryStatus = ItineraryStatus.INACTIVE,
+    ) -> Itinerary:
+        return Itinerary(
+            id=doc_id,
+            user_id=user_id,
+            title=title,
+            preference_version=1,
+            status=status,
+            brief=TripBrief(
+                region="Tokyo",
+                description="Trip",
+                trip_length_days=1,
+            ),
+        )
 
-        repo = ItineraryRepository()
-        results = repo.find_by_user("user-1")
+    def test_find_by_user_returns_user_itineraries(self) -> None:
+        self.repo.create("itin-1", self._make_itinerary("itin-1", title="Tokyo Trip"))
+
+        results = self.repo.find_by_user("user-1")
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].id, "itin-1")
         self.assertEqual(results[0].title, "Tokyo Trip")
 
-    @patch("google.cloud.firestore.Client")
-    def test_find_active_returns_only_active_itinerary(self, mock_firestore: MagicMock) -> None:
-        def snapshot_factory(
-            doc_id: str,
-            user_id: str,
-            title: str,
-            status: str,
-        ) -> MagicMock:
-            sn = MagicMock()
-            sn.exists = True
-            sn.id = doc_id
-            sn.to_dict.return_value = {
-                "user_id": user_id,
-                "title": title,
-                "status": status,
-                "preference_version": 1,
-                "brief": {
-                    "region": "Tokyo",
-                    "description": "Trip",
-                    "trip_length_days": 1,
-                    "include_regions": [],
-                    "avoid_regions": [],
-                    "traveler_count": 1,
-                    "day_rules": [],
-                    "constraints": [],
-                    "must_visit_places": [],
-                },
-                "days": [],
-            }
-            return sn
+    def test_find_by_user_returns_empty_when_no_match(self) -> None:
+        self.repo.create("itin-1", self._make_itinerary("itin-1", user_id="other-user"))
 
-        active_snapshot = snapshot_factory("active-1", "user-1", "Active", "ACTIVE")
-        inactive_snapshot = snapshot_factory("inactive-1", "user-1", "Inactive", "INACTIVE")
+        results = self.repo.find_by_user("user-1")
+        self.assertEqual(len(results), 0)
 
-        mock_collection = MagicMock()
-        mock_collection.where.return_value.stream.return_value = [active_snapshot, inactive_snapshot]
-        mock_firestore.return_value.collection.return_value = mock_collection
+    def test_find_active_returns_only_active_itinerary(self) -> None:
+        self.repo.create("active-1", self._make_itinerary("active-1", title="Active", status=ItineraryStatus.ACTIVE))
+        self.repo.create("inactive-1", self._make_itinerary("inactive-1", title="Inactive", status=ItineraryStatus.INACTIVE))
 
-        repo = ItineraryRepository()
-        result = repo.find_active("user-1")
+        result = self.repo.find_active("user-1")
         self.assertIsNotNone(result)
         if result:
             self.assertEqual(result.id, "active-1")
             self.assertEqual(result.status, ItineraryStatus.ACTIVE)
 
-    @patch("google.cloud.firestore.Client")
-    def test_find_active_returns_none_when_no_active(self, mock_firestore: MagicMock) -> None:
-        mock_collection = MagicMock()
-        mock_collection.where.return_value.stream.return_value = []
-        mock_firestore.return_value.collection.return_value = mock_collection
+    def test_find_active_returns_none_when_no_active(self) -> None:
+        self.repo.create("inactive-1", self._make_itinerary("inactive-1", title="Inactive"))
 
-        repo = ItineraryRepository()
-        result = repo.find_active("user-1")
+        result = self.repo.find_active("user-1")
         self.assertIsNone(result)
 
-    @patch("google.cloud.firestore.Client")
-    def test_create_itinerary(self, mock_firestore: MagicMock) -> None:
-        mock_doc = MagicMock()
-        mock_doc.set.return_value = None
-        mock_collection = MagicMock()
-        mock_collection.document.return_value = mock_doc
-        mock_firestore.return_value.collection.return_value = mock_collection
+    def test_create_itinerary(self) -> None:
+        itinerary = self._make_itinerary("itin-1", title="Kyoto")
+        self.repo.create("itin-1", itinerary)
 
-        itinerary = Itinerary(
-            id="itin-1",
-            user_id="user-1",
-            title="Kyoto",
-            preference_version=1,
-            status=ItineraryStatus.INACTIVE,
-            brief=TripBrief(
-                region="Kyoto",
-                description="Temples",
-                trip_length_days=2,
-            ),
-        )
+        result = self.repo.get("itin-1")
+        self.assertIsNotNone(result)
+        if result:
+            self.assertEqual(result.title, "Kyoto")
 
-        repo = ItineraryRepository()
-        repo.create("itin-1", itinerary)
-        mock_doc.set.assert_called_once()
+    def test_delete_removes_itinerary(self) -> None:
+        self.repo.create("itin-1", self._make_itinerary("itin-1"))
+        self.repo.delete("itin-1")
+
+        result = self.repo.get("itin-1")
+        self.assertIsNone(result)
+
+    def test_list_all_returns_all(self) -> None:
+        self.repo.create("a", self._make_itinerary("a"))
+        self.repo.create("b", self._make_itinerary("b"))
+
+        all_items = self.repo.list_all()
+        self.assertEqual(len(all_items), 2)
 
 
 if __name__ == "__main__":

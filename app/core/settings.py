@@ -1,6 +1,5 @@
 from functools import lru_cache
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,11 +30,6 @@ class Settings(BaseSettings):
     google_geocoding_api_key: str = ""
     google_weather_api_key: str = ""
 
-    firestore_database_id: str = Field(default="(default)")
-    pubsub_location_events_topic: str = "location-events"
-    pubsub_agent_runs_topic: str = "agent-runs"
-    pubsub_notifications_topic: str = "notifications"
-
     log_level: str = "INFO"
     request_timeout_seconds: int = 30
     agent_timeout_seconds: int = 60
@@ -57,13 +51,10 @@ class Settings(BaseSettings):
 
     @property
     def missing_required_values(self) -> list[str]:
-        required: dict[str, str] = {}
-        if self.google_cloud_project:
-            if self.use_vertex_ai and not self.vertex_ai_location:
-                required["VERTEX_AI_LOCATION"] = self.vertex_ai_location
-        else:
-            required["GOOGLE_CLOUD_PROJECT"] = self.google_cloud_project
-        return [key for key, value in required.items() if not value]
+        missing: list[str] = []
+        if self.use_vertex_ai and not self.vertex_ai_location:
+            missing.append("VERTEX_AI_LOCATION")
+        return missing
 
 
 @lru_cache
