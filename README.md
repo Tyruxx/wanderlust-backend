@@ -4,7 +4,10 @@ FastAPI backend for the Flutter app in `../smart_travel_itinerary_flutter`.
 
 Backend uses Google ADK 2.0 for agentic planning and active-itinerary workflows.
 Google Cloud is only required for external API calls (Gemini/Vertex AI and Google Maps Platform).
-All persistent storage is local (in-memory dict — no Firestore, no Pub/Sub, no Secret Manager).
+Backend runtime state is local SQLite only — no Firestore, no Pub/Sub, no
+Secret Manager. Flutter remains the local-first source of truth for traveler
+preferences and saved itineraries; backend requests use an `X-User-Id` device
+context header rather than an end-user identity provider.
 
 ## Local Setup
 
