@@ -12,16 +12,28 @@ for the Flutter app in `../smart_travel_itinerary_flutter`.
 The backend will use FastAPI plus Google ADK 2.0. It must enforce the product
 guardrails in `../specs/` before invoking agents or external tools.
 
+Security development guidance lives in `skills/wanderlust-agentic-security/SKILL.md`
+and must be loaded before changing agent workflows, ADK tools, prompts, MCP/tool
+integrations, external-source ingestion, secrets, deployment, persistence, or
+ACTIVE itinerary event handling.
+
 ## Planned Architecture
 
-- Flutter iOS client authenticates with Google via Firebase and sends Firebase ID tokens.
-- FastAPI verifies auth, owns business guardrails, persists state, and exposes REST APIs.
-- Firestore stores users, preferences, itineraries, dynamic preferences, place evidence, and audit logs.
+- Flutter iOS client owns the device-local traveler profile, local preferences, and saved itineraries.
+- FastAPI receives explicit request context from Flutter for agent planning and active-event handling; it does not depend on end-user identity credentials.
+- Backend storage is limited to service-side artifacts such as source evidence, redacted audit logs, optional run state, and external-service caches. Preferences and saved itineraries are local-first in Flutter.
 - Google ADK graph workflows generate and verify itineraries.
 - Google ADK ambient/event workflows process ACTIVE itinerary location and deviation events only.
 - Pub/Sub carries location and agent run events.
 - Secret Manager stores API keys.
 - Cloud Run hosts the backend service.
+
+## Superseded Identity Direction
+
+Earlier steps implemented identity-provider-oriented scaffolding. The current
+product decision supersedes that direction: there is no end-user identity-provider
+requirement. Future implementation should remove or bypass user-identity
+dependencies and keep preferences plus saved itineraries local to the Flutter app.
 
 ## Functional Completion Bar
 
@@ -29,19 +41,19 @@ This plan must end with a working app backed by real external services, not only
 mocked interfaces. Test doubles remain allowed for unit tests, but the completed
 backend must support the following production path:
 
-- Flutter signs in with Google/Firebase and calls FastAPI with a real Firebase ID token.
-- FastAPI verifies the token with Firebase Admin using Application Default Credentials.
-- Preferences, itineraries, recommendations, evidence, and audit logs persist in Firestore.
+- Flutter completes local preference onboarding before the first itinerary generation.
+- Flutter sends explicit trip, preference, itinerary, and ACTIVE-event context to FastAPI without end-user identity credentials.
+- Preferences and saved itineraries persist locally on device; recommendations, evidence, redacted audit logs, and optional service run state may persist server-side.
 - Itinerary generation calls Google ADK/Vertex AI and real Google Maps Platform APIs.
 - ACTIVE itinerary events publish through Pub/Sub and trigger ACTIVE-only backend handling.
 - Runtime secrets are read from Secret Manager or Cloud Run environment bindings.
 - Cloud Run deployment exposes a reachable backend URL for the Flutter app.
-- End-to-end smoke tests prove account onboarding, itinerary creation, start/stop/complete,
+- End-to-end smoke tests prove local preference onboarding, itinerary creation, start/stop/complete,
   and at least one generated itinerary using real configured services.
 - Flutter integration is part of completion: the Flutter app must use the deployed backend URL,
-  attach Firebase ID tokens to API requests, send iOS location events only for ACTIVE
-  itineraries, call itinerary generation/start/stop/complete endpoints, and display recovery
-  proposals without applying them until the user accepts.
+  send request context without identity tokens, send iOS location events only for ACTIVE itineraries,
+  call itinerary generation/start/stop/complete endpoints, and display recovery proposals without
+  applying them until the user accepts.
 
 ## Required Environment Values
 
@@ -51,30 +63,22 @@ Minimum values before real service calls:
 
 - `GOOGLE_CLOUD_PROJECT`
 - `GOOGLE_CLOUD_REGION`
-- `FIREBASE_PROJECT_ID`
-- `FIREBASE_WEB_API_KEY`
-- `FIREBASE_IOS_BUNDLE_ID`
-- `GOOGLE_IOS_CLIENT_ID`
-- `GOOGLE_IOS_REVERSED_CLIENT_ID`
-- `GOOGLE_SERVER_CLIENT_ID` for backend audience checks when needed
 - Vertex AI service-account access, or `GOOGLE_API_KEY` for local Gemini fallback
 - `GOOGLE_MAPS_BACKEND_API_KEY` for backend Places, Routes, Geocoding, and Weather web-service calls
 - `GOOGLE_MAPS_IOS_API_KEY` for Maps SDK for iOS / Flutter map UI calls
 
 Optional later:
 
-- `GOOGLE_ANDROID_CLIENT_ID` if Android is added
-- `GOOGLE_WEB_CLIENT_ID` if a web client is added
 - TikTok API credentials, only if approved
 - Instagram Graph API credentials, only if approved
 - Stripe credentials for explicit payment flows
 
 ## Guardrail Checklist
 
-- [x] Account onboarding required before first itinerary generation.
+- [x] Local preference onboarding required before first itinerary generation.
 - [x] Preferences stored as structured data, not Markdown-only.
 - [x] Preference changes increment a version and affect future agent runs.
-- [x] Reset preferences redirects to onboarding and does not delete itineraries.
+- [x] Reset preferences erases local preferences and saved itinerary preference patterns, returns to onboarding, and does not delete saved itineraries.
 - [x] Only one itinerary may be ACTIVE.
 - [x] Starting another itinerary requires explicit replacement.
 - [x] INACTIVE and COMPLETED itineraries reject active location/event ingestion.
@@ -106,20 +110,19 @@ Verification:
 - Required configuration is discoverable through `/readyz`.
 - No external network/service calls are performed in this step.
 
-### Step 1a: iOS Auth Environment Alignment
+### Step 1a: Superseded iOS Identity Environment Alignment
 
-Status: Completed.
+Status: Superseded by the local-first preference decision.
 
 Deliverables:
 
-- Replaced mixed platform auth placeholders with iOS-first Google Sign-In fields.
-- Added settings fields for iOS bundle ID, iOS client ID, reversed client ID, and server client ID.
-- Documented Android/Web OAuth fields as optional future values.
+- Earlier identity-provider placeholders were added for iOS-first experimentation.
+- These fields are no longer product requirements and should be removed or ignored in future implementation work.
 
 Verification:
 
 - Python source compiles.
-- Auth environment names clearly separate client-side iOS values from backend server audience values.
+- Local-first docs now separate backend service credentials from end-user identity requirements.
 
 ### Step 1b: Secret Hygiene And History Rewrite
 
@@ -175,23 +178,24 @@ Verification:
 - Bundled project runtime runs `python -m unittest discover -s tests`: 11 tests pass.
 - System `/usr/bin/python3` cannot run tests because it lacks project dependency `pydantic`; backend target remains Python 3.11+ per `pyproject.toml`.
 
-### Step 3: Auth And Persistence
+### Step 3: Superseded Identity Verification And Persistence
 
-Status: Completed.
+Status: Superseded by the local-first preference decision.
 
 Deliverables:
 
-- Firebase ID-token verification service in `app/services/auth.py` with `FirebaseAuthService` (production via `firebase-admin`) and `MockFirebaseAuthService` (test double).
+- Earlier identity-token verification and service-side repository scaffolding were added.
 - Firestore repository layer in `app/services/repositories.py` with:
   - `FirestoreRepository[T]` generic base with create/get/update/delete/query
   - `UserRepository`, `TravelPreferencesRepository`, `ItineraryRepository`
   - `DynamicPreferencesRepository`, `EvidenceRepository`, `RecommendationRepository`, `AuditLogRepository`
 - `UserProfile` and `AuditLogEntry` Pydantic models.
-- Unit tests in `tests/test_auth.py` (4 tests) and `tests/test_repositories.py` (10 tests).
+- Unit tests in the identity/persistence and repository areas.
+- Future implementation should keep preferences and saved itineraries device-local, and use backend persistence only for service-side artifacts such as evidence, redacted traces, optional run state, and caches.
 
 Verification:
 
-- All 25 tests pass (`python -m unittest discover -s tests`): 11 guardrail + 4 auth + 10 repository tests.
+- Historical tests passed for this scaffold. The target architecture is now local-first and should be tested through local preference persistence plus backend request-context flows.
 
 ### Step 4: Itinerary APIs
 
@@ -199,12 +203,12 @@ Status: Completed.
 
 Deliverables:
 
-- REST routes for authenticated preferences, itinerary CRUD, start/stop/complete, delete, export request, and save itinerary preference pattern.
-- FastAPI auth dependency that verifies real Firebase ID tokens through `FirebaseAuthService` outside `APP_ENV=test`.
+- REST routes for preference, itinerary CRUD, start/stop/complete, delete, export request, and save itinerary preference pattern were scaffolded before the local-first pivot.
+- Future routes should accept explicit request context from Flutter and must not require end-user identity tokens.
 - Firestore-backed route handlers using the Step 3 repositories; mocks are limited to tests.
-- Account-onboarding guard on first itinerary generation: users without completed preferences cannot generate itineraries.
+- Local preference-onboarding guard on first itinerary generation: the app must not generate itineraries until local preferences are complete.
 - Lifecycle route behavior backed by Step 2 guardrails, including single ACTIVE itinerary and stop/complete service commands.
-- API tests with mocked Firebase/Firestore dependency overrides.
+- API tests with mocked service dependencies.
 - Repository serialization updated to write JSON-safe values to Firestore and to support deterministic preference document IDs by user ID.
 
 Verification:
@@ -212,7 +216,7 @@ Verification:
 - Installed backend dependencies into the local Codex Python runtime for real import verification.
 - Full unit/API suite passes: `python -m unittest discover -s tests` runs 29 tests.
 - Ruff passes for `app` and `tests`.
-- API routes are production-wired to Firebase auth and Firestore repositories by default; test doubles are injected only through FastAPI dependency overrides.
+- API route identity dependencies are superseded; future production wiring should use device-local app state for preferences and saved itineraries, with backend persistence limited to service-side artifacts.
 
 ### Step 5: ADK Planning Workflow
 
@@ -245,14 +249,14 @@ Status: Completed.
 
 Deliverables:
 
-- Authenticated location-event ingestion route that rejects INACTIVE and COMPLETED itineraries before publishing anything.
+- Location-event ingestion route that rejects INACTIVE and COMPLETED itineraries before publishing anything.
 - Pub/Sub publisher wired to `PUBSUB_LOCATION_EVENTS_TOPIC` with a local/test fake only under test.
 - ACTIVE-only event handler that loads current itinerary, preferences, and dynamic behavior from Firestore before invoking ADK ambient logic.
 - Dynamic preference updates persisted in Firestore with versioning and immediate preference-version checks.
 - Recovery proposal creation that never mutates the itinerary until the user accepts it through an explicit API action.
 - Integration smoke path proving a real Pub/Sub message can be published and processed for an ACTIVE itinerary.
 - Added domain contracts for location events, geo points, active-event ingestion results, recovery proposal status, and recovery proposals.
-- Added `/v1/itineraries/{id}/location-events` for authenticated Flutter location-event ingestion.
+- Added `/v1/itineraries/{id}/location-events` for Flutter location-event ingestion.
 - Added recovery proposal accept/reject routes with explicit acceptance before applying recovery state.
 - Added Pub/Sub publisher for real Google Cloud Pub/Sub location events.
 - Added gated real-service smoke script: `RUN_REAL_INTEGRATION=1 python scripts/smoke_active_event_pubsub.py`.
@@ -275,9 +279,9 @@ Deliverables:
 - Added `scripts/setup_gcp_resources.sh` to enable Cloud Run, Cloud Build, Firestore, Pub/Sub, Secret Manager, Vertex AI, and Google Maps Platform APIs; create Pub/Sub topics; create the Maps backend-key secret; and grant the backend service account least-necessary runtime roles.
 - Added `scripts/deploy_cloud_run.sh` to build and deploy Cloud Run with production env vars, the backend service account, and Secret Manager binding for `GOOGLE_MAPS_BACKEND_API_KEY`.
 - Added `docs/DEPLOYMENT.md` with setup, deploy, smoke-test, Flutter run, CI, and rollback commands.
-- Added Flutter runtime configuration for `BACKEND_BASE_URL`, `GOOGLE_MAPS_IOS_API_KEY`, and a debug Firebase ID-token bridge.
+- Added Flutter runtime configuration for `BACKEND_BASE_URL`, `GOOGLE_MAPS_IOS_API_KEY`, and an earlier debug identity-token bridge that is now superseded.
 - Added a componentized Flutter `BackendApiClient` boundary and IO implementation for itinerary generation, lifecycle actions, and ACTIVE-only location-event posting.
-- Wired the add-itinerary flow to call `/v1/itineraries/generate` when a Firebase token is supplied; otherwise the app keeps the local fallback path for development previews.
+- Wired the add-itinerary flow to call `/v1/itineraries/generate` when the backend client is configured; future implementation should send explicit device-local request context without end-user identity tokens.
 - Wired itinerary start, stop, and complete UI actions to the backend lifecycle endpoints when the client is configured.
 - Added an app-state method for sending current-location events only when an itinerary is ACTIVE and the backend client is configured.
 
@@ -290,7 +294,7 @@ Verification:
 - Flutter analyzer passes.
 - Flutter test suite status is recorded in the latest handoff entry.
 - Guardrail review against `../specs/` confirms deployment/runtime wiring preserves:
-  account onboarding before itinerary generation, single ACTIVE itinerary state, no active event posting for INACTIVE/COMPLETED itineraries, explicit start/stop/complete lifecycle actions, server-side Maps key isolation, social sources as discovery-only, and recovery proposals requiring user acceptance.
+  local preference onboarding before itinerary generation, single ACTIVE itinerary state, no active event posting for INACTIVE/COMPLETED itineraries, explicit start/stop/complete lifecycle actions, server-side Maps key isolation, social sources as discovery-only, and recovery proposals requiring user acceptance.
 
 ### Step 8: End-To-End Functional Validation
 
@@ -298,9 +302,8 @@ Status: Pending.
 
 Planned deliverables:
 
-- Seed or create a real Firebase test user and complete onboarding through the app/backend.
-- Run the Flutter app against the deployed backend and verify Firebase OAuth login returns a
-  token accepted by FastAPI.
+- Complete local preference onboarding in the Flutter app and verify preferences remain device-local.
+- Run the Flutter app against the deployed backend and verify itinerary generation sends explicit request context without end-user identity tokens.
 - Generate an itinerary through the real API path using Firestore, ADK/Vertex, and Google Maps Platform.
 - Start the itinerary, ingest a representative ACTIVE location event through Pub/Sub, and verify dynamic preference/recovery behavior is persisted without violating guardrails.
 - Stop and mark the itinerary completed, verifying active services halt and subsequent active events are rejected.
@@ -312,9 +315,10 @@ Planned deliverables:
 
 - Step 1 completed: backend scaffold, `.env`, and handoff plan created.
 - Step 2 completed: domain models, deterministic guardrail services, and 11 unit tests added.
-- Step 3 completed: Firebase auth service, Firestore repository layer, and 14 new tests (25 total).
-- Plan updated after Step 3: remaining steps now require real Firebase, Firestore, Google Maps, ADK/Vertex, Pub/Sub, Secret Manager, Cloud Run, and Flutter integration before the backend is considered complete.
-- Step 4 completed: authenticated itinerary/preference REST APIs added with real Firebase/Firestore production wiring and 4 API tests (29 total).
+- Step 3 completed at the time: identity verification service, repository layer, and 14 new tests (25 total). This direction is now superseded by local-first preferences and saved itineraries.
+- Plan updated after Step 3: remaining steps require Google Maps, ADK/Vertex or Gemini, Pub/Sub, Secret Manager, Cloud Run, and Flutter integration before the backend is considered complete.
+- Step 4 completed at the time: identity-gated itinerary/preference REST APIs added with service-side repository wiring and 4 API tests (29 total). This direction is now superseded by local-first app state plus request-context backend calls.
 - Step 5 completed: ADK/Gemini planning workflow, real Google Maps wrappers, generation endpoint, gated integration smoke script, and 5 new tests added (34 total).
 - Step 6 completed: ACTIVE-only location-event ingestion, Pub/Sub publisher, dynamic preference update, recovery proposal contracts, Flutter integration plan updates, and 2 new API scenarios added (36 total).
-- Step 7 completed: Cloud Run deployment assets, Secret Manager/IAM setup script, deployment runbook, and Flutter backend API integration boundary added. Step 8 remains the first real-device/deployed-backend validation step with Google OAuth/Firebase ID tokens and real external services end to end.
+- Step 7 completed: Cloud Run deployment assets, Secret Manager/IAM setup script, deployment runbook, and Flutter backend API integration boundary added.
+- Local-first pivot recorded: end-user identity-provider flows are no longer required; preferences and saved itineraries are device-local, and backend agent calls should use explicit request context.

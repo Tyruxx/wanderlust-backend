@@ -9,12 +9,6 @@ export GOOGLE_CLOUD_PROJECT="your-project-id"
 export GOOGLE_CLOUD_REGION="asia-southeast1"
 export CLOUD_RUN_SERVICE="wanderlust-backend"
 export CLOUD_RUN_SERVICE_ACCOUNT="wanderlust-backend@your-project-id.iam.gserviceaccount.com"
-export FIREBASE_PROJECT_ID="your-firebase-project-id"
-export FIREBASE_WEB_API_KEY="your-firebase-web-api-key"
-export FIREBASE_IOS_BUNDLE_ID="your.ios.bundle"
-export GOOGLE_IOS_CLIENT_ID="your-ios-client-id"
-export GOOGLE_IOS_REVERSED_CLIENT_ID="your-reversed-ios-client-id"
-export GOOGLE_SERVER_CLIENT_ID="your-server-client-id"
 ```
 
 2. Enable APIs, create Pub/Sub topics, and grant IAM:
@@ -26,7 +20,7 @@ export GOOGLE_SERVER_CLIENT_ID="your-server-client-id"
 3. Add the backend Maps key to Secret Manager:
 
 ```bash
-printf '%s' 'YOUR_MAPS_BACKEND_KEY' \
+printf '%s' '<maps-backend-key>' \
   | gcloud secrets versions add google-maps-backend-api-key \
     --data-file=- \
     --project "$GOOGLE_CLOUD_PROJECT"
@@ -57,21 +51,19 @@ flutter run \
   --dart-define=GOOGLE_MAPS_IOS_API_KEY="$GOOGLE_MAPS_IOS_API_KEY"
 ```
 
-The Flutter app must request a Firebase ID token after Google sign-in and pass it
-as a bearer token to every backend API call. The iOS Maps key stays client-side;
-the backend Maps key stays in Secret Manager.
+The Flutter app stores traveler preferences and saved itineraries locally. Backend
+agent calls send explicit trip, preference, itinerary, and ACTIVE-event context
+without end-user identity tokens. The iOS Maps key stays client-side; the backend
+Maps key stays in Secret Manager.
 
-For local backend-contract testing before real Firebase Sign-In is wired in the
-Flutter client, pass a short-lived test Firebase ID token:
+For local backend-contract testing, point the app at the backend URL and use the
+same device-local request context that the app will send in production:
 
 ```bash
 flutter run \
   --dart-define=BACKEND_BASE_URL="$BACKEND_BASE_URL" \
-  --dart-define=GOOGLE_MAPS_IOS_API_KEY="$GOOGLE_MAPS_IOS_API_KEY" \
-  --dart-define=FIREBASE_ID_TOKEN_FOR_DEBUG="$FIREBASE_ID_TOKEN"
+  --dart-define=GOOGLE_MAPS_IOS_API_KEY="$GOOGLE_MAPS_IOS_API_KEY"
 ```
-
-Do not commit this token or put it in checked-in environment files.
 
 ## CI Checks
 
