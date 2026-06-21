@@ -6,10 +6,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.services.auth import FirebaseAuthService, VerifiedUser
 from app.services.repositories import (
     AuditLogRepository,
+    EvidenceRepository,
     ItineraryRepository,
+    RecommendationRepository,
     TravelPreferencesRepository,
     UserRepository,
 )
+from app.services.planning import ADKPlanningWorkflowService, get_planning_workflow_service
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -20,6 +23,8 @@ class RepositoryBundle:
     users: UserRepository
     preferences: TravelPreferencesRepository
     itineraries: ItineraryRepository
+    evidence: EvidenceRepository
+    recommendations: RecommendationRepository
     audit_logs: AuditLogRepository
 
 
@@ -50,5 +55,11 @@ def get_repositories() -> RepositoryBundle:
         users=UserRepository(),
         preferences=TravelPreferencesRepository(),
         itineraries=ItineraryRepository(),
+        evidence=EvidenceRepository(),
+        recommendations=RecommendationRepository(),
         audit_logs=AuditLogRepository(),
     )
+
+
+def get_planning_service() -> ADKPlanningWorkflowService:
+    return get_planning_workflow_service()

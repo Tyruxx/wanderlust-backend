@@ -7,10 +7,22 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from app.api.dependencies import RepositoryBundle, get_current_user, get_repositories
-from app.domain.models import Itinerary, ItineraryStatus, TravelPreferences
+from app.api.dependencies import get_planning_service
+from app.domain.models import (
+    DayPlan,
+    Itinerary,
+    ItineraryStatus,
+    PlaceStop,
+    Recommendation,
+    SourceConfidence,
+    SourceEvidence,
+    SourceType,
+    TravelPreferences,
+)
 from app.main import app
 from app.services.auth import VerifiedUser
 from app.services.repositories import AuditLogEntry
+from app.services.planning import PlanningResult
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -68,11 +80,15 @@ class ApiRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.preferences = InMemoryPreferencesRepository()
         self.itineraries = InMemoryItineraryRepository()
+        self.evidence: InMemoryRepository[SourceEvidence] = InMemoryRepository()
+        self.recommendations: InMemoryRepository[Recommendation] = InMemoryRepository()
         self.audit_logs: InMemoryRepository[AuditLogEntry] = InMemoryRepository()
         self.repositories = RepositoryBundle(
             users=InMemoryRepository(),  # type: ignore[arg-type]
             preferences=self.preferences,  # type: ignore[arg-type]
             itineraries=self.itineraries,  # type: ignore[arg-type]
+            evidence=self.evidence,  # type: ignore[arg-type]
+            recommendations=self.recommendations,  # type: ignore[arg-type]
             audit_logs=self.audit_logs,  # type: ignore[arg-type]
         )
         app.dependency_overrides[get_current_user] = lambda: VerifiedUser(
@@ -80,6 +96,7 @@ class ApiRouteTests(unittest.TestCase):
             email="alice@example.com",
         )
         app.dependency_overrides[get_repositories] = lambda: self.repositories
+        app.dependency_overrides[get_planning_service] = lambda: FakePlanningService()
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
@@ -107,6 +124,28 @@ class ApiRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"]["code"], "onboarding_required")
+
+    def test_generate_itinerary_persists_planned_itinerary_evidence_and_recommendations(self) -> None:
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(
+                user_id="user-1",
+                version=7,
+                onboarding_required=False,
+                interests=["food"],
+            ),
+        )
+
+        response = self.client.post("/v1/itineraries/generate", json=itinerary_payload("Generated"))
+
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body["title"], "Generated")
+        self.assertEqual(body["preference_version"], 7)
+        self.assertEqual(len(body["days"]), 1)
+        self.assertEqual(len(self.itineraries.items), 1)
+        self.assertEqual(len(self.evidence.items), 1)
+        self.assertEqual(len(self.recommendations.items), 1)
 
     def test_start_requires_replacement_confirmation_then_switches_active_itinerary(self) -> None:
         self.preferences.create(
@@ -178,6 +217,60 @@ def itinerary_payload(title: str = "Singapore Food Trip") -> dict[str, object]:
         },
         "days": [],
     }
+
+
+class FakePlanningService:
+    def generate_itinerary(
+        self,
+        *,
+        user_id: str,
+        brief,
+        preferences: TravelPreferences,
+    ) -> PlanningResult:
+        evidence = SourceEvidence(
+            source_type=SourceType.GOOGLE_PLACES,
+            title="Maxwell Food Centre",
+            confidence=SourceConfidence.HIGH,
+        )
+        recommendation = Recommendation(
+            id="rec-generated-1",
+            title="Maxwell Food Centre",
+            category="food",
+            explanation="It matches the user's food preference and is a known hawker centre.",
+            confidence=SourceConfidence.HIGH,
+            evidence=[evidence],
+        )
+        itinerary = Itinerary(
+            id="itin-generated",
+            user_id=user_id,
+            title="Generated",
+            brief=brief,
+            preference_version=preferences.version,
+            days=[
+                DayPlan(
+                    day_number=1,
+                    start_location="Hotel",
+                    end_location="Hotel",
+                    start_time="09:00",
+                    end_time="18:00",
+                    stops=[
+                        PlaceStop(
+                            id="stop-generated-1",
+                            name="Maxwell Food Centre",
+                            suggested_order=1,
+                            what_to_do="Try hawker food.",
+                            recommendations=[recommendation],
+                        )
+                    ],
+                )
+            ],
+        )
+        return PlanningResult(
+            itinerary=itinerary,
+            evidence=[evidence],
+            recommendations=[recommendation],
+            agent_names=["trip_intake_agent", "place_discovery_agent", "verification_agent"],
+        )
 
 
 if __name__ == "__main__":

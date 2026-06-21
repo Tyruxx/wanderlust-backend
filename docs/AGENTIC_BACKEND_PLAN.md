@@ -212,9 +212,9 @@ Verification:
 
 ### Step 5: ADK Planning Workflow
 
-Status: Pending.
+Status: Completed.
 
-Planned deliverables:
+Deliverables:
 
 - Trip intake, place discovery, verification, and planner agents implemented through Google ADK/Vertex AI.
 - Graph workflow that converts a `TripBrief` plus structured preferences into persisted `Itinerary` records.
@@ -222,6 +222,18 @@ Planned deliverables:
 - Source-evidence persistence for Maps, official web/search-grounded evidence, and compliant social-source candidates only when credentials are configured.
 - Recommendation validation before persistence: explanation required, confidence required, low-confidence social-only results suppressed or marked exploratory.
 - Contract tests with fixed fixtures plus a gated integration smoke command that calls Vertex/ADK and Maps when real credentials are present.
+- Added `/v1/itineraries/generate` to run the planning workflow and persist itinerary, source evidence, recommendations, and an audit log.
+- Added ADK agent definitions for trip intake, place discovery, verification, and itinerary planning.
+- Added Google Maps clients for Places Text Search (New), Geocoding, Routes, and Weather current conditions.
+- Added Gemini/Vertex planner client using configured `GEMINI_MODEL`, `USE_VERTEX_AI`, and Google Cloud settings.
+
+Verification:
+
+- Full unit/API/contract suite passes: `python -m unittest discover -s tests` runs 34 tests.
+- Ruff passes for `app` and `tests`.
+- Maps wrappers are verified with `httpx.MockTransport` against expected endpoint shapes and headers.
+- Planning workflow tests verify ADK agent registration, generated itinerary construction, evidence creation, and recommendation guardrail validation.
+- Gated real-service smoke command added: `RUN_REAL_INTEGRATION=1 python scripts/smoke_planning_integration.py`.
 
 ### Step 6: Active Event Workflow
 
@@ -269,3 +281,4 @@ Planned deliverables:
 - Step 3 completed: Firebase auth service, Firestore repository layer, and 14 new tests (25 total).
 - Plan updated after Step 3: remaining steps now require real Firebase, Firestore, Google Maps, ADK/Vertex, Pub/Sub, Secret Manager, Cloud Run, and Flutter integration before the backend is considered complete.
 - Step 4 completed: authenticated itinerary/preference REST APIs added with real Firebase/Firestore production wiring and 4 API tests (29 total).
+- Step 5 completed: ADK/Gemini planning workflow, real Google Maps wrappers, generation endpoint, gated integration smoke script, and 5 new tests added (34 total).

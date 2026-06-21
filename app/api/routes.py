@@ -2,7 +2,12 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.dependencies import RepositoryBundle, get_current_user, get_repositories
+from app.api.dependencies import (
+    RepositoryBundle,
+    get_current_user,
+    get_planning_service,
+    get_repositories,
+)
 from app.api.schemas import (
     DeleteResponse,
     ExportRequestResponse,
@@ -26,6 +31,7 @@ from app.services.guardrails import (
     PreferenceService,
 )
 from app.services.repositories import AuditLogEntry
+from app.services.planning import ADKPlanningWorkflowService
 
 
 router = APIRouter(prefix="/v1", tags=["v1"])
@@ -85,6 +91,39 @@ def create_itinerary(
     )
     repositories.itineraries.create(itinerary.id, itinerary)
     _audit(repositories, current_user.uid, "itinerary.create", "itinerary", itinerary.id)
+    return itinerary
+
+
+@router.post("/itineraries/generate", response_model=Itinerary, status_code=status.HTTP_201_CREATED)
+def generate_itinerary(
+    request: ItineraryCreateRequest,
+    current_user: VerifiedUser = Depends(get_current_user),
+    repositories: RepositoryBundle = Depends(get_repositories),
+    planning_service: ADKPlanningWorkflowService = Depends(get_planning_service),
+) -> Itinerary:
+    preferences = _require_completed_onboarding(current_user.uid, repositories)
+    result = planning_service.generate_itinerary(
+        user_id=current_user.uid,
+        brief=request.brief,
+        preferences=preferences,
+    )
+    itinerary = result.itinerary.model_copy(
+        update={"title": request.title or result.itinerary.title},
+        deep=True,
+    )
+    repositories.itineraries.create(itinerary.id, itinerary)
+    for evidence in result.evidence:
+        repositories.evidence.create(f"evidence-{uuid4().hex}", evidence)
+    for recommendation in result.recommendations:
+        repositories.recommendations.create(recommendation.id, recommendation)
+    _audit(
+        repositories,
+        current_user.uid,
+        "itinerary.generate",
+        "itinerary",
+        itinerary.id,
+        details=f"agents={','.join(result.agent_names)}",
+    )
     return itinerary
 
 
@@ -289,6 +328,7 @@ def _audit(
     action: str,
     target_type: str,
     target_id: str,
+    details: str = "",
 ) -> None:
     event = AuditLogEntry(
         event_id=f"audit-{uuid4().hex}",
@@ -297,5 +337,6 @@ def _audit(
         target_type=target_type,
         target_id=target_id,
         timestamp=utc_timestamp(),
+        details=details,
     )
     repositories.audit_logs.create(event.event_id, event)
