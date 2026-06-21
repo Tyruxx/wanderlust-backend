@@ -52,9 +52,12 @@ class FirestoreRepository(Generic[T]):
 
     def get(self, doc_id: str) -> T | None:
         snapshot = self._doc_ref(doc_id).get()
-        if not snapshot.exists:
+        if snapshot.exists is not True:
             return None
-        return self._from_dict(snapshot.to_dict(), doc_id)
+        data = snapshot.to_dict()
+        if data is None:
+            return None
+        return self._from_dict(data, doc_id)
 
     def update(self, doc_id: str, model: T) -> T:
         self._doc_ref(doc_id).set(self._to_dict(model))
@@ -72,7 +75,7 @@ class FirestoreRepository(Generic[T]):
         return [self._from_dict(doc.to_dict(), doc.id) for doc in docs]
 
     def _to_dict(self, model: T) -> dict[str, object]:
-        raw: dict[str, object] = model.model_dump(mode="python", exclude={"id"})
+        raw: dict[str, object] = model.model_dump(mode="json", exclude={"id"})
         return _normalize_firestore(raw)
 
     def _from_dict(self, data: dict[str, object], doc_id: str) -> T:
@@ -113,6 +116,9 @@ class TravelPreferencesRepository(FirestoreRepository[TravelPreferences]):
         super().__init__("preferences", TravelPreferences)
 
     def get_by_user(self, user_id: str) -> TravelPreferences | None:
+        direct = self.get(user_id)
+        if direct:
+            return direct
         results = self.query_by_field("user_id", user_id)
         return results[0] if results else None
 

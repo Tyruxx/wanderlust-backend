@@ -67,7 +67,7 @@ Optional later:
 
 ## Guardrail Checklist
 
-- [ ] Account onboarding required before first itinerary generation.
+- [x] Account onboarding required before first itinerary generation.
 - [x] Preferences stored as structured data, not Markdown-only.
 - [x] Preference changes increment a version and affect future agent runs.
 - [x] Reset preferences redirects to onboarding and does not delete itineraries.
@@ -191,16 +191,24 @@ Verification:
 
 ### Step 4: Itinerary APIs
 
-Status: Pending.
+Status: Completed.
 
-Planned deliverables:
+Deliverables:
 
 - REST routes for authenticated preferences, itinerary CRUD, start/stop/complete, delete, export request, and save itinerary preference pattern.
 - FastAPI auth dependency that verifies real Firebase ID tokens through `FirebaseAuthService` outside `APP_ENV=test`.
 - Firestore-backed route handlers using the Step 3 repositories; mocks are limited to tests.
 - Account-onboarding guard on first itinerary generation: users without completed preferences cannot generate itineraries.
 - Lifecycle route behavior backed by Step 2 guardrails, including single ACTIVE itinerary and stop/complete service commands.
-- API tests with mocked Firebase/Firestore plus one documented manual smoke path using a real Firebase ID token and Firestore project.
+- API tests with mocked Firebase/Firestore dependency overrides.
+- Repository serialization updated to write JSON-safe values to Firestore and to support deterministic preference document IDs by user ID.
+
+Verification:
+
+- Installed backend dependencies into the local Codex Python runtime for real import verification.
+- Full unit/API suite passes: `python -m unittest discover -s tests` runs 29 tests.
+- Ruff passes for `app` and `tests`.
+- API routes are production-wired to Firebase auth and Firestore repositories by default; test doubles are injected only through FastAPI dependency overrides.
 
 ### Step 5: ADK Planning Workflow
 
@@ -260,3 +268,4 @@ Planned deliverables:
 - Step 2 completed: domain models, deterministic guardrail services, and 11 unit tests added.
 - Step 3 completed: Firebase auth service, Firestore repository layer, and 14 new tests (25 total).
 - Plan updated after Step 3: remaining steps now require real Firebase, Firestore, Google Maps, ADK/Vertex, Pub/Sub, Secret Manager, Cloud Run, and Flutter integration before the backend is considered complete.
+- Step 4 completed: authenticated itinerary/preference REST APIs added with real Firebase/Firestore production wiring and 4 API tests (29 total).

@@ -1,7 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+from app.api.routes import router as v1_router
 from app.core.settings import get_settings
+from app.services.guardrails import GuardrailViolation
 
 
 settings = get_settings()
@@ -19,6 +22,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(v1_router)
+
+
+@app.exception_handler(GuardrailViolation)
+def guardrail_violation_handler(_: Request, exc: GuardrailViolation) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={"detail": {"code": exc.code, "message": str(exc)}},
+    )
 
 
 @app.get("/healthz", tags=["health"])
