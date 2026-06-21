@@ -11,6 +11,8 @@ from app.domain.models import (
     Itinerary,
     ItineraryStatus,
     Recommendation,
+    RecoveryProposal,
+    RecoveryProposalStatus,
     SourceEvidence,
     TravelPreferences,
 )
@@ -154,6 +156,18 @@ class EvidenceRepository(FirestoreRepository[SourceEvidence]):
 class RecommendationRepository(FirestoreRepository[Recommendation]):
     def __init__(self) -> None:
         super().__init__("recommendations", Recommendation)
+
+
+class RecoveryProposalRepository(FirestoreRepository[RecoveryProposal]):
+    def __init__(self) -> None:
+        super().__init__("recovery_proposals", RecoveryProposal)
+
+    def find_pending_by_itinerary(self, itinerary_id: str) -> list[RecoveryProposal]:
+        return [
+            proposal
+            for proposal in self.query_by_field("itinerary_id", itinerary_id)
+            if proposal.status == RecoveryProposalStatus.PENDING
+        ]
 
 
 class AuditLogRepository(FirestoreRepository[AuditLogEntry]):

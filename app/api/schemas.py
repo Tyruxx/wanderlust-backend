@@ -4,6 +4,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from app.domain.models import (
+    GeoPoint,
     BudgetPosture,
     DayPlan,
     DayRhythm,
@@ -12,6 +13,7 @@ from app.domain.models import (
     TravelPace,
     TravelPreferences,
     TripBrief,
+    LocationEvent,
 )
 
 
@@ -63,6 +65,41 @@ class ExportRequestResponse(BaseModel):
 class DeleteResponse(BaseModel):
     deleted: bool
     itinerary_id: str
+
+
+class LocationEventRequest(BaseModel):
+    location: GeoPoint
+    occurred_at: str
+    speed_meters_per_second: float | None = Field(default=None, ge=0)
+    heading_degrees: float | None = Field(default=None, ge=0, le=360)
+    active_stop_id: str | None = None
+    context_signal: str | None = None
+    deviation_detected: bool = False
+
+    def to_location_event(
+        self,
+        *,
+        event_id: str,
+        itinerary_id: str,
+        user_id: str,
+    ) -> LocationEvent:
+        return LocationEvent(
+            id=event_id,
+            itinerary_id=itinerary_id,
+            user_id=user_id,
+            location=self.location,
+            occurred_at=self.occurred_at,
+            speed_meters_per_second=self.speed_meters_per_second,
+            heading_degrees=self.heading_degrees,
+            active_stop_id=self.active_stop_id,
+            context_signal=self.context_signal,
+            deviation_detected=self.deviation_detected,
+        )
+
+
+class RecoveryDecisionResponse(BaseModel):
+    proposal_id: str
+    status: str
 
 
 def utc_timestamp() -> str:

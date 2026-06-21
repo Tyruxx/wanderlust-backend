@@ -38,6 +38,10 @@ backend must support the following production path:
 - Cloud Run deployment exposes a reachable backend URL for the Flutter app.
 - End-to-end smoke tests prove account onboarding, itinerary creation, start/stop/complete,
   and at least one generated itinerary using real configured services.
+- Flutter integration is part of completion: the Flutter app must use the deployed backend URL,
+  attach Firebase ID tokens to API requests, send iOS location events only for ACTIVE
+  itineraries, call itinerary generation/start/stop/complete endpoints, and display recovery
+  proposals without applying them until the user accepts.
 
 ## Required Environment Values
 
@@ -237,9 +241,9 @@ Verification:
 
 ### Step 6: Active Event Workflow
 
-Status: Pending.
+Status: Completed.
 
-Planned deliverables:
+Deliverables:
 
 - Authenticated location-event ingestion route that rejects INACTIVE and COMPLETED itineraries before publishing anything.
 - Pub/Sub publisher wired to `PUBSUB_LOCATION_EVENTS_TOPIC` with a local/test fake only under test.
@@ -247,6 +251,18 @@ Planned deliverables:
 - Dynamic preference updates persisted in Firestore with versioning and immediate preference-version checks.
 - Recovery proposal creation that never mutates the itinerary until the user accepts it through an explicit API action.
 - Integration smoke path proving a real Pub/Sub message can be published and processed for an ACTIVE itinerary.
+- Added domain contracts for location events, geo points, active-event ingestion results, recovery proposal status, and recovery proposals.
+- Added `/v1/itineraries/{id}/location-events` for authenticated Flutter location-event ingestion.
+- Added recovery proposal accept/reject routes with explicit acceptance before applying recovery state.
+- Added Pub/Sub publisher for real Google Cloud Pub/Sub location events.
+- Added gated real-service smoke script: `RUN_REAL_INTEGRATION=1 python scripts/smoke_active_event_pubsub.py`.
+
+Verification:
+
+- Full unit/API/contract suite passes: `python -m unittest discover -s tests` runs 36 tests.
+- Ruff passes for `app`, `tests`, and `scripts`.
+- API tests verify INACTIVE and COMPLETED itineraries reject location events before publish/update.
+- API tests verify ACTIVE location events update dynamic preferences, publish through a fake publisher, create pending recovery proposals, and require explicit accept before status changes.
 
 ### Step 7: Deployment
 
@@ -259,6 +275,12 @@ Planned deliverables:
 - Secret Manager setup for Google Maps backend key, optional Gemini key, social-source credentials, and Stripe credentials when enabled.
 - Cloud Run deployment commands and rollback notes.
 - Flutter runtime configuration pointing to the deployed backend URL for iOS builds.
+- Flutter API client integration for Firebase-authenticated backend requests.
+- Flutter iOS Maps key wiring for map UI and backend Maps key kept server-side only.
+- Flutter ACTIVE itinerary location sender that calls `/v1/itineraries/{id}/location-events`
+  only after start and stops after stop/complete.
+- Flutter UI wiring for itinerary generation, lifecycle actions, saved itineraries, recovery
+  proposals, and preference reset/onboarding flows.
 - CI check command list for unit tests, API tests, and gated integration smoke tests.
 - Production readiness checklist covering IAM, API enablement, CORS, Firebase token verification, Firestore writes, Maps calls, Vertex/ADK calls, Pub/Sub publish/consume, and guardrail audit logs.
 
@@ -269,9 +291,13 @@ Status: Pending.
 Planned deliverables:
 
 - Seed or create a real Firebase test user and complete onboarding through the app/backend.
+- Run the Flutter app against the deployed backend and verify Firebase OAuth login returns a
+  token accepted by FastAPI.
 - Generate an itinerary through the real API path using Firestore, ADK/Vertex, and Google Maps Platform.
 - Start the itinerary, ingest a representative ACTIVE location event through Pub/Sub, and verify dynamic preference/recovery behavior is persisted without violating guardrails.
 - Stop and mark the itinerary completed, verifying active services halt and subsequent active events are rejected.
+- Verify the Flutter app reflects backend state for saved itineraries, ACTIVE/INACTIVE/COMPLETED
+  status, recovery proposal accept/reject, and preference version changes.
 - Produce a handoff runbook with exact commands, required env values, smoke-test evidence, known limitations, and remaining production hardening tasks.
 
 ## Progress Log
@@ -282,3 +308,4 @@ Planned deliverables:
 - Plan updated after Step 3: remaining steps now require real Firebase, Firestore, Google Maps, ADK/Vertex, Pub/Sub, Secret Manager, Cloud Run, and Flutter integration before the backend is considered complete.
 - Step 4 completed: authenticated itinerary/preference REST APIs added with real Firebase/Firestore production wiring and 4 API tests (29 total).
 - Step 5 completed: ADK/Gemini planning workflow, real Google Maps wrappers, generation endpoint, gated integration smoke script, and 5 new tests added (34 total).
+- Step 6 completed: ACTIVE-only location-event ingestion, Pub/Sub publisher, dynamic preference update, recovery proposal contracts, Flutter integration plan updates, and 2 new API scenarios added (36 total).

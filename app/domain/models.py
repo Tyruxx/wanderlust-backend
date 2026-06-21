@@ -67,6 +67,12 @@ class AgentActionType(str, Enum):
     ADD_ITINERARY_PATTERN = "add_itinerary_pattern"
 
 
+class RecoveryProposalStatus(str, Enum):
+    PENDING = "PENDING"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+
+
 class ServiceCommandType(str, Enum):
     START_LOCATION_COLLECTION = "start_location_collection"
     STOP_LOCATION_COLLECTION = "stop_location_collection"
@@ -128,6 +134,47 @@ class DynamicBehaviorPreferences(DomainModel):
     observed_meal_windows: list[str] = Field(default_factory=list)
     observed_rest_patterns: list[str] = Field(default_factory=list)
     confidence: SourceConfidence = SourceConfidence.LOW
+
+
+class GeoPoint(DomainModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_meters: float | None = Field(default=None, ge=0)
+
+
+class LocationEvent(DomainModel):
+    id: str
+    itinerary_id: str
+    user_id: str
+    location: GeoPoint
+    occurred_at: str
+    speed_meters_per_second: float | None = Field(default=None, ge=0)
+    heading_degrees: float | None = Field(default=None, ge=0, le=360)
+    active_stop_id: str | None = None
+    context_signal: str | None = None
+    deviation_detected: bool = False
+
+
+class RecoveryProposal(DomainModel):
+    id: str
+    itinerary_id: str
+    user_id: str
+    status: RecoveryProposalStatus = RecoveryProposalStatus.PENDING
+    reason: str
+    proposed_changes_summary: str
+    source_location_event_id: str
+    preference_version: int = Field(ge=1)
+    requires_user_acceptance: bool = True
+    created_at: str
+    decided_at: str | None = None
+
+
+class ActiveEventIngestionResult(DomainModel):
+    accepted: bool
+    itinerary_id: str
+    published_event_id: str
+    dynamic_preference_version: int
+    recovery_proposal: RecoveryProposal | None = None
 
 
 class DayRule(DomainModel):

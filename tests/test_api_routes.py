@@ -6,20 +6,28 @@ from typing import Generic, TypeVar
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from app.api.dependencies import RepositoryBundle, get_current_user, get_repositories
+from app.api.dependencies import (
+    RepositoryBundle,
+    get_active_event_service,
+    get_current_user,
+    get_repositories,
+)
 from app.api.dependencies import get_planning_service
 from app.domain.models import (
     DayPlan,
+    DynamicBehaviorPreferences,
     Itinerary,
     ItineraryStatus,
     PlaceStop,
     Recommendation,
+    RecoveryProposal,
     SourceConfidence,
     SourceEvidence,
     SourceType,
     TravelPreferences,
 )
 from app.main import app
+from app.services.active_events import ActiveEventWorkflowService
 from app.services.auth import VerifiedUser
 from app.services.repositories import AuditLogEntry
 from app.services.planning import PlanningResult
@@ -76,19 +84,28 @@ class InMemoryItineraryRepository(InMemoryRepository[Itinerary]):
         )
 
 
+class InMemoryDynamicPreferencesRepository(InMemoryRepository[DynamicBehaviorPreferences]):
+    def get_by_itinerary(self, itinerary_id: str) -> DynamicBehaviorPreferences | None:
+        return self.get(itinerary_id)
+
+
 class ApiRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.preferences = InMemoryPreferencesRepository()
         self.itineraries = InMemoryItineraryRepository()
+        self.dynamic_preferences = InMemoryDynamicPreferencesRepository()
         self.evidence: InMemoryRepository[SourceEvidence] = InMemoryRepository()
         self.recommendations: InMemoryRepository[Recommendation] = InMemoryRepository()
+        self.recovery_proposals: InMemoryRepository[RecoveryProposal] = InMemoryRepository()
         self.audit_logs: InMemoryRepository[AuditLogEntry] = InMemoryRepository()
         self.repositories = RepositoryBundle(
             users=InMemoryRepository(),  # type: ignore[arg-type]
             preferences=self.preferences,  # type: ignore[arg-type]
             itineraries=self.itineraries,  # type: ignore[arg-type]
+            dynamic_preferences=self.dynamic_preferences,  # type: ignore[arg-type]
             evidence=self.evidence,  # type: ignore[arg-type]
             recommendations=self.recommendations,  # type: ignore[arg-type]
+            recovery_proposals=self.recovery_proposals,  # type: ignore[arg-type]
             audit_logs=self.audit_logs,  # type: ignore[arg-type]
         )
         app.dependency_overrides[get_current_user] = lambda: VerifiedUser(
@@ -97,6 +114,9 @@ class ApiRouteTests(unittest.TestCase):
         )
         app.dependency_overrides[get_repositories] = lambda: self.repositories
         app.dependency_overrides[get_planning_service] = lambda: FakePlanningService()
+        app.dependency_overrides[get_active_event_service] = lambda: ActiveEventWorkflowService(
+            publisher=FakePublisher()
+        )
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
@@ -204,6 +224,64 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(delete_response.status_code, 200)
         self.assertIsNone(self.itineraries.get(itinerary["id"]))
 
+    def test_location_event_rejects_inactive_itinerary_before_publishing(self) -> None:
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(user_id="user-1", version=2, onboarding_required=False),
+        )
+        itinerary = self.client.post("/v1/itineraries", json=itinerary_payload()).json()
+
+        response = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/location-events",
+            json=location_event_payload(deviation_detected=True),
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json()["detail"]["code"],
+            "inactive_itinerary_event_rejected",
+        )
+        self.assertEqual(len(self.dynamic_preferences.items), 0)
+        self.assertEqual(len(self.recovery_proposals.items), 0)
+
+        self.client.post(f"/v1/itineraries/{itinerary['id']}/complete")
+        completed_response = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/location-events",
+            json=location_event_payload(deviation_detected=True),
+        )
+        self.assertEqual(completed_response.status_code, 409)
+
+    def test_active_location_event_updates_dynamic_preferences_and_recovery_contract(self) -> None:
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(user_id="user-1", version=4, onboarding_required=False),
+        )
+        itinerary = self.client.post("/v1/itineraries", json=itinerary_payload()).json()
+        self.client.post(f"/v1/itineraries/{itinerary['id']}/start")
+
+        event_response = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/location-events",
+            json=location_event_payload(deviation_detected=True),
+        )
+
+        self.assertEqual(event_response.status_code, 200)
+        body = event_response.json()
+        self.assertTrue(body["accepted"])
+        self.assertEqual(body["published_event_id"], "fake-message-id")
+        self.assertEqual(body["dynamic_preference_version"], 2)
+        proposal = body["recovery_proposal"]
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal["status"], "PENDING")
+        self.assertTrue(proposal["requires_user_acceptance"])
+        self.assertEqual(len(self.recovery_proposals.items), 1)
+
+        proposal_id = proposal["id"]
+        accept_response = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/recovery-proposals/{proposal_id}/accept"
+        )
+        self.assertEqual(accept_response.status_code, 200)
+        self.assertEqual(accept_response.json()["status"], "ACCEPTED")
+
 
 def itinerary_payload(title: str = "Singapore Food Trip") -> dict[str, object]:
     return {
@@ -217,6 +295,25 @@ def itinerary_payload(title: str = "Singapore Food Trip") -> dict[str, object]:
         },
         "days": [],
     }
+
+
+def location_event_payload(deviation_detected: bool = False) -> dict[str, object]:
+    return {
+        "location": {
+            "latitude": 1.3521,
+            "longitude": 103.8198,
+            "accuracy_meters": 20,
+        },
+        "occurred_at": "2026-06-21T10:00:00+08:00",
+        "speed_meters_per_second": 1.2,
+        "context_signal": "off_route" if deviation_detected else "movement",
+        "deviation_detected": deviation_detected,
+    }
+
+
+class FakePublisher:
+    def publish(self, event) -> str:
+        return "fake-message-id"
 
 
 class FakePlanningService:

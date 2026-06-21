@@ -3,12 +3,15 @@ from dataclasses import dataclass
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.services.active_events import ActiveEventWorkflowService, get_active_event_workflow_service
 from app.services.auth import FirebaseAuthService, VerifiedUser
 from app.services.repositories import (
     AuditLogRepository,
+    DynamicPreferencesRepository,
     EvidenceRepository,
     ItineraryRepository,
     RecommendationRepository,
+    RecoveryProposalRepository,
     TravelPreferencesRepository,
     UserRepository,
 )
@@ -23,8 +26,10 @@ class RepositoryBundle:
     users: UserRepository
     preferences: TravelPreferencesRepository
     itineraries: ItineraryRepository
+    dynamic_preferences: DynamicPreferencesRepository
     evidence: EvidenceRepository
     recommendations: RecommendationRepository
+    recovery_proposals: RecoveryProposalRepository
     audit_logs: AuditLogRepository
 
 
@@ -55,11 +60,17 @@ def get_repositories() -> RepositoryBundle:
         users=UserRepository(),
         preferences=TravelPreferencesRepository(),
         itineraries=ItineraryRepository(),
+        dynamic_preferences=DynamicPreferencesRepository(),
         evidence=EvidenceRepository(),
         recommendations=RecommendationRepository(),
+        recovery_proposals=RecoveryProposalRepository(),
         audit_logs=AuditLogRepository(),
     )
 
 
 def get_planning_service() -> ADKPlanningWorkflowService:
     return get_planning_workflow_service()
+
+
+def get_active_event_service() -> ActiveEventWorkflowService:
+    return get_active_event_workflow_service()
