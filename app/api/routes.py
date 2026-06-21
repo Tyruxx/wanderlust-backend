@@ -37,7 +37,7 @@ from app.services.guardrails import (
     PreferenceService,
 )
 from app.services.repositories import AuditLogEntry
-from app.services.planning import ADKPlanningWorkflowService
+from app.services.planning import ADKPlanningWorkflowService, PlanningWorkflowError
 
 
 router = APIRouter(prefix="/v1", tags=["v1"])
@@ -108,11 +108,17 @@ def generate_itinerary(
     planning_service: ADKPlanningWorkflowService = Depends(get_planning_service),
 ) -> Itinerary:
     preferences = _require_completed_onboarding(current_user.uid, repositories)
-    result = planning_service.generate_itinerary(
-        user_id=current_user.uid,
-        brief=request.brief,
-        preferences=preferences,
-    )
+    try:
+        result = planning_service.generate_itinerary(
+            user_id=current_user.uid,
+            brief=request.brief,
+            preferences=preferences,
+        )
+    except PlanningWorkflowError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
     itinerary = result.itinerary.model_copy(
         update={"title": request.title or result.itinerary.title},
         deep=True,

@@ -116,12 +116,35 @@ class GeminiPlannerClient:
     def __init__(self) -> None:
         settings = get_settings()
         self.model = settings.gemini_model
-        self.client = genai.Client(
-            vertexai=settings.use_vertex_ai,
-            api_key=None if settings.use_vertex_ai else settings.google_api_key,
-            project=settings.google_cloud_project or None,
-            location=settings.vertex_ai_location if settings.use_vertex_ai else None,
+        self.use_vertex_ai = settings.use_vertex_ai
+        self.google_api_key = settings.google_api_key
+        self._client: genai.Client | None = None
+
+    def _get_client(self) -> genai.Client:
+        if self._client is not None:
+            return self._client
+        if self.use_vertex_ai:
+            try:
+                import google.auth
+
+                google.auth.default()
+            except Exception:
+                if self.google_api_key:
+                    self._client = genai.Client(
+                        vertexai=False,
+                        api_key=self.google_api_key,
+                    )
+                    return self._client
+                raise PlanningWorkflowError(
+                    "Vertex AI credentials not configured. "
+                    "Run `gcloud auth application-default login` "
+                    "or set GOOGLE_API_KEY in .env and USE_VERTEX_AI=false"
+                )
+        self._client = genai.Client(
+            vertexai=False,
+            api_key=self.google_api_key,
         )
+        return self._client
 
     def generate_plan(
         self,
@@ -132,7 +155,8 @@ class GeminiPlannerClient:
         weather: dict[str, Any] | None,
     ) -> dict[str, Any]:
         prompt = _planner_prompt(brief, preferences, candidates, weather)
-        response = self.client.models.generate_content(
+        client = self._get_client()
+        response = client.models.generate_content(
             model=self.model,
             contents=prompt,
         )
