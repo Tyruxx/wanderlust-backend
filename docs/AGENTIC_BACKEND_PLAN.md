@@ -266,23 +266,31 @@ Verification:
 
 ### Step 7: Deployment
 
-Status: Pending.
+Status: Completed.
 
-Planned deliverables:
+Deliverables:
 
-- Dockerfile.
-- Cloud Run service configured with the backend service account, Firebase/Firestore/Vertex/Pub/Sub/Secret Manager permissions, and production environment variables.
-- Secret Manager setup for Google Maps backend key, optional Gemini key, social-source credentials, and Stripe credentials when enabled.
-- Cloud Run deployment commands and rollback notes.
-- Flutter runtime configuration pointing to the deployed backend URL for iOS builds.
-- Flutter API client integration for Firebase-authenticated backend requests.
-- Flutter iOS Maps key wiring for map UI and backend Maps key kept server-side only.
-- Flutter ACTIVE itinerary location sender that calls `/v1/itineraries/{id}/location-events`
-  only after start and stops after stop/complete.
-- Flutter UI wiring for itinerary generation, lifecycle actions, saved itineraries, recovery
-  proposals, and preference reset/onboarding flows.
-- CI check command list for unit tests, API tests, and gated integration smoke tests.
-- Production readiness checklist covering IAM, API enablement, CORS, Firebase token verification, Firestore writes, Maps calls, Vertex/ADK calls, Pub/Sub publish/consume, and guardrail audit logs.
+- Added a production Dockerfile for the FastAPI backend.
+- Added `.dockerignore` rules that keep `.env`, `.env.*`, service-account JSON files, caches, and build artifacts out of container context.
+- Added `scripts/setup_gcp_resources.sh` to enable Cloud Run, Cloud Build, Firestore, Pub/Sub, Secret Manager, Vertex AI, and Google Maps Platform APIs; create Pub/Sub topics; create the Maps backend-key secret; and grant the backend service account least-necessary runtime roles.
+- Added `scripts/deploy_cloud_run.sh` to build and deploy Cloud Run with production env vars, the backend service account, and Secret Manager binding for `GOOGLE_MAPS_BACKEND_API_KEY`.
+- Added `docs/DEPLOYMENT.md` with setup, deploy, smoke-test, Flutter run, CI, and rollback commands.
+- Added Flutter runtime configuration for `BACKEND_BASE_URL`, `GOOGLE_MAPS_IOS_API_KEY`, and a debug Firebase ID-token bridge.
+- Added a componentized Flutter `BackendApiClient` boundary and IO implementation for itinerary generation, lifecycle actions, and ACTIVE-only location-event posting.
+- Wired the add-itinerary flow to call `/v1/itineraries/generate` when a Firebase token is supplied; otherwise the app keeps the local fallback path for development previews.
+- Wired itinerary start, stop, and complete UI actions to the backend lifecycle endpoints when the client is configured.
+- Added an app-state method for sending current-location events only when an itinerary is ACTIVE and the backend client is configured.
+
+Verification:
+
+- Backend unit/API/contract suite passes: `python -m unittest discover -s tests` runs 36 tests.
+- Ruff passes for `app`, `tests`, and `scripts`.
+- Backend Python source and deployment scripts pass syntax checks.
+- Flutter source is formatted.
+- Flutter analyzer passes.
+- Flutter test suite status is recorded in the latest handoff entry.
+- Guardrail review against `../specs/` confirms deployment/runtime wiring preserves:
+  account onboarding before itinerary generation, single ACTIVE itinerary state, no active event posting for INACTIVE/COMPLETED itineraries, explicit start/stop/complete lifecycle actions, server-side Maps key isolation, social sources as discovery-only, and recovery proposals requiring user acceptance.
 
 ### Step 8: End-To-End Functional Validation
 
@@ -309,3 +317,4 @@ Planned deliverables:
 - Step 4 completed: authenticated itinerary/preference REST APIs added with real Firebase/Firestore production wiring and 4 API tests (29 total).
 - Step 5 completed: ADK/Gemini planning workflow, real Google Maps wrappers, generation endpoint, gated integration smoke script, and 5 new tests added (34 total).
 - Step 6 completed: ACTIVE-only location-event ingestion, Pub/Sub publisher, dynamic preference update, recovery proposal contracts, Flutter integration plan updates, and 2 new API scenarios added (36 total).
+- Step 7 completed: Cloud Run deployment assets, Secret Manager/IAM setup script, deployment runbook, and Flutter backend API integration boundary added. Step 8 remains the first real-device/deployed-backend validation step with Google OAuth/Firebase ID tokens and real external services end to end.
