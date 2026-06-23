@@ -1,10 +1,14 @@
+import logging
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import router as v1_router
 from app.core.settings import get_settings
 from app.services.guardrails import GuardrailViolation
+
+logger = logging.getLogger(__name__)
 
 
 settings = get_settings()
@@ -24,6 +28,15 @@ app.add_middleware(
 )
 
 app.include_router(v1_router)
+
+
+@app.exception_handler(RequestValidationError)
+def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    logger.warning("RequestValidationError %s %s body=%s errors=%s", request.method, request.url.path, exc.body, exc.errors())
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
 
 
 @app.exception_handler(GuardrailViolation)

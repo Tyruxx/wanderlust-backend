@@ -2,6 +2,8 @@ import logging
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.exceptions import RequestValidationError
+from starlette.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +65,11 @@ def update_preferences(
 ) -> TravelPreferences:
     logger.info("update_preferences user=%s fields=%s", current_user.uid, request.to_update_dict())
     existing = repositories.preferences.get_by_user(current_user.uid) or default_preferences(current_user.uid)
-    updated = PreferenceService().update_onboarding_preferences(existing, **request.to_update_dict())
+    try:
+        updated = PreferenceService().update_onboarding_preferences(existing, **request.to_update_dict())
+    except Exception as exc:
+        logger.exception("update_preferences failed for user=%s", current_user.uid)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     repositories.preferences.update(current_user.uid, updated)
     _audit(repositories, current_user.uid, "preferences.update", "preferences", current_user.uid)
     return updated
