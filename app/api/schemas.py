@@ -97,6 +97,50 @@ class LocationEventRequest(BaseModel):
         )
 
 
+class PlacesAutocompleteSuggestionSchema(BaseModel):
+    place_id: str
+    description: str
+
+
+class PlacesAutocompleteResponse(BaseModel):
+    suggestions: list[PlacesAutocompleteSuggestionSchema]
+
+
+class StopCoordinateSchema(BaseModel):
+    lat: float
+    lng: float
+
+
+class RouteRequest(BaseModel):
+    day_index: int
+    stops: list[StopCoordinateSchema]
+    modes: list[str]
+
+
+class RouteSegmentSchema(BaseModel):
+    from_stop_index: int
+    to_stop_index: int
+    mode: str
+    duration_seconds: int
+    distance_meters: int
+    encoded_polyline: str
+
+
+class RouteSegmentsResponse(BaseModel):
+    segments: list[RouteSegmentSchema]
+
+
+class ChatRequest(BaseModel):
+    message: str
+    day_index: int
+
+
+class ChatResponse(BaseModel):
+    agent_message: str
+    action: str | None = None  # "insert_stop" | "rejected" | None
+    updated_itinerary: Itinerary | None = None
+
+
 class RecoveryDecisionResponse(BaseModel):
     proposal_id: str
     status: str

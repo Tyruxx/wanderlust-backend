@@ -336,6 +336,15 @@ def _planner_prompt(
                 "Do not include bookings, purchases, or calls.",
                 "Low-confidence or social-only claims must be marked exploratory or omitted.",
             ],
+            "radius_km_guide": (
+                f"Activities should preferably be within {brief.radius_km} km of {brief.region}. "
+                "This is a flexible guide, not a hard constraint."
+            ) if brief.radius_km else None,
+            "preferred_transport_modes": brief.preferred_transport_modes or [],
+            "transport_mode_guide": (
+                f"The user prefers these transport modes: {brief.preferred_transport_modes}. "
+                "When ordering stops consider realistic travel times using these modes."
+            ) if brief.preferred_transport_modes else None,
             "brief": brief.model_dump(mode="json"),
             "preferences": preferences.model_dump(mode="json"),
             "candidate_places": [candidate.model_dump(mode="json") for candidate in candidates],
@@ -355,6 +364,167 @@ def _parse_json_response(text: str) -> dict[str, Any]:
         return json.loads(stripped)
     except json.JSONDecodeError as exc:
         raise PlanningWorkflowError("Planner response was not valid JSON.") from exc
+
+
+class ChatAgentService:
+    def __init__(self) -> None:
+        settings = get_settings()
+        self.model = settings.gemini_model
+        self._client: genai.Client | None = None
+
+    def _get_client(self) -> genai.Client:
+        if self._client is not None:
+            return self._client
+        settings = get_settings()
+        self._client = genai.Client(
+            vertexai=False,
+            api_key=settings.google_api_key,
+        )
+        return self._client
+
+    def process_message(
+        self,
+        message: str,
+        itinerary: Itinerary,
+        day_index: int,
+    ) -> dict[str, Any]:
+        """Process a chat message about inserting a stop into a day plan.
+
+        Returns a dict with keys:
+          - agent_message: str (response to user)
+          - action: str | None ("insert_stop", "rejected", or None)
+          - new_stop: PlaceStop | None
+          - insert_before_index: int | None
+          - error: str | None
+        """
+        if day_index < 0 or day_index >= len(itinerary.days):
+            return {
+                "agent_message": "Invalid day number. Please specify a valid day.",
+                "action": "rejected",
+                "new_stop": None,
+                "insert_before_index": None,
+                "error": "day_index out of range",
+            }
+
+        day = itinerary.days[day_index]
+        stops_json = [
+            {
+                "index": i,
+                "name": s.name,
+                "time_window": s.time_window,
+                "what_to_do": s.what_to_do,
+                "suggested_order": s.suggested_order,
+            }
+            for i, s in enumerate(day.stops)
+        ]
+        prompt = json.dumps(
+            {
+                "task": (
+                    "You are a travel assistant for an existing itinerary. "
+                    "The user wants to add or insert an activity/event/place between existing stops in their day plan. "
+                    "Determine if the request is in scope (adding a place/activity to this specific itinerary). "
+                    "If the request is about modifying the itinerary (adding a stop, inserting an activity), "
+                    "return action='insert_stop' with the new stop details and the index before which to insert. "
+                    "If the request is out of scope (e.g., general chat, weather in another city, booking hotels), "
+                    "return action='rejected' with a polite explanation that you can only help with adding activities."
+                ),
+                "itinerary_context": {
+                    "title": itinerary.title,
+                    "region": itinerary.brief.region,
+                    "description": itinerary.brief.description,
+                },
+                "day": {
+                    "day_number": day.day_number,
+                    "start_location": day.start_location,
+                    "end_location": day.end_location,
+                    "current_stops": stops_json,
+                },
+                "user_message": message,
+                "response_schema": {
+                    "agent_message": "string (your response to the user)",
+                    "action": "insert_stop | rejected (use rejected for out-of-scope requests that are not about adding/inserting a stop)",
+                    "new_stop": {
+                        "name": "string (place/activity name)",
+                        "suggested_order": "int (position order)",
+                        "time_window": "string (optional time like '10:00')",
+                        "what_to_do": "string (description of what to do there)",
+                        "travel_time_assumption_minutes": "int (optional, estimated travel time in minutes)",
+                    },
+                    "insert_before_index": "int (index before which to insert this stop, use length of stops to append at end)",
+                },
+                "guardrails": [
+                    "Only accept requests that add or insert places/activities into this itinerary.",
+                    "Reject anything unrelated: weather, hotels, flights, general questions, off-topic chat.",
+                    "Do not generate fake place names — use realistic, well-known places suitable for the region.",
+                    "The new stop must fit between the existing stops logically.",
+                ],
+            },
+            ensure_ascii=True,
+        )
+
+        client = self._get_client()
+        response = client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+        )
+        text = getattr(response, "text", None)
+        if not text:
+            return {
+                "agent_message": "I'm sorry, I couldn't process that request right now.",
+                "action": "rejected",
+                "new_stop": None,
+                "insert_before_index": None,
+                "error": "empty response",
+            }
+
+        try:
+            result = _parse_json_response(text)
+        except PlanningWorkflowError:
+            return {
+                "agent_message": text,
+                "action": None,
+                "new_stop": None,
+                "insert_before_index": None,
+                "error": None,
+            }
+
+        action = result.get("action")
+        if action == "insert_stop":
+            stop_data = result.get("new_stop", {})
+            insert_idx = result.get("insert_before_index")
+            if insert_idx is None or not isinstance(insert_idx, int):
+                insert_idx = len(day.stops)
+            if insert_idx < 0:
+                insert_idx = 0
+            if insert_idx > len(day.stops):
+                insert_idx = len(day.stops)
+
+            new_stop = PlaceStop(
+                id=f"stop-chat-{uuid4().hex[:8]}",
+                name=stop_data.get("name", "New stop"),
+                suggested_order=stop_data.get("suggested_order", insert_idx + 1),
+                time_window=stop_data.get("time_window"),
+                what_to_do=stop_data.get("what_to_do", "Visit this place"),
+                travel_time_assumption_minutes=stop_data.get("travel_time_assumption_minutes"),
+            )
+            return {
+                "agent_message": result.get("agent_message", f"Added {new_stop.name} to day {day_index + 1}."),
+                "action": "insert_stop",
+                "new_stop": new_stop,
+                "insert_before_index": insert_idx,
+                "error": None,
+            }
+
+        return {
+            "agent_message": result.get(
+                "agent_message",
+                "I can only help with adding activities to this itinerary. Please ask me to add a place or activity.",
+            ),
+            "action": action or "rejected",
+            "new_stop": None,
+            "insert_before_index": None,
+            "error": None,
+        }
 
 
 def _parse_time(value: str) -> time:

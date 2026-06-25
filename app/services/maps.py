@@ -42,8 +42,15 @@ class Coordinates:
     longitude: float
 
 
+@dataclass(frozen=True)
+class PlacesAutocompleteSuggestion:
+    place_id: str
+    description: str
+
+
 class GoogleMapsClient:
     PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+    PLACES_AUTOCOMPLETE_URL = "https://maps.googleapis.com/maps/api/place/autocomplete/json"
     ROUTES_COMPUTE_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
     GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
     WEATHER_CURRENT_URL = "https://weather.googleapis.com/v1/currentConditions:lookup"
@@ -119,6 +126,31 @@ class GoogleMapsClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def places_autocomplete(
+        self,
+        input: str,
+        *,
+        types: str = "geocode",
+        max_results: int = 5,
+    ) -> list[PlacesAutocompleteSuggestion]:
+        self._require_api_key()
+        response = self.http_client.get(
+            self.PLACES_AUTOCOMPLETE_URL,
+            params={
+                "input": input,
+                "types": types,
+                "key": self.api_key,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        suggestions = []
+        for prediction in data.get("predictions", []):
+            place_id = prediction.get("place_id", "")
+            description = prediction.get("description", "")
+            suggestions.append(PlacesAutocompleteSuggestion(place_id=place_id, description=description))
+        return suggestions[:max_results]
 
     def compute_route(
         self,

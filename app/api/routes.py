@@ -15,13 +15,20 @@ from app.api.dependencies import (
     get_repositories,
 )
 from app.api.schemas import (
+    ChatRequest,
+    ChatResponse,
     DeleteResponse,
     ExportRequestResponse,
     ItineraryCreateRequest,
     ItineraryUpdateRequest,
     LocationEventRequest,
+    PlacesAutocompleteResponse,
+    PlacesAutocompleteSuggestionSchema,
     PreferenceUpdateRequest,
     RecoveryDecisionResponse,
+    RouteRequest,
+    RouteSegmentSchema,
+    RouteSegmentsResponse,
     default_preferences,
     utc_timestamp,
 )
@@ -42,6 +49,7 @@ from app.services.guardrails import (
     PreferenceService,
 )
 from app.services.repositories import AuditLogEntry
+from app.services.maps import Coordinates, GoogleMapsClient, MapsIntegrationError
 from app.services.planning import ADKPlanningWorkflowService, PlanningWorkflowError
 
 
@@ -86,6 +94,28 @@ def reset_preferences(
     repositories.preferences.update(current_user.uid, reset)
     _audit(repositories, current_user.uid, "preferences.reset", "preferences", current_user.uid)
     return reset
+
+
+@router.get("/places/autocomplete", response_model=PlacesAutocompleteResponse)
+def places_autocomplete(
+    input: str = Query(min_length=1, max_length=200),
+    types: str = Query(default="geocode"),
+):
+    logger.info("places_autocomplete input=%s types=%s", input, types)
+    try:
+        client = GoogleMapsClient()
+        suggestions = client.places_autocomplete(input=input, types=types)
+    except MapsIntegrationError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    except Exception as exc:
+        logger.exception("places_autocomplete failed input=%s", input)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Autocomplete service unavailable.")
+    return PlacesAutocompleteResponse(
+        suggestions=[
+            PlacesAutocompleteSuggestionSchema(place_id=s.place_id, description=s.description)
+            for s in suggestions
+        ],
+    )
 
 
 @router.get("/itineraries", response_model=list[Itinerary])
@@ -163,6 +193,119 @@ def get_itinerary(
 ) -> Itinerary:
     logger.info("get_itinerary user=%s itinerary_id=%s", current_user.uid, itinerary_id)
     return _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
+
+
+@router.post("/itineraries/{itinerary_id}/routes", response_model=RouteSegmentsResponse)
+def compute_itinerary_routes(
+    itinerary_id: str,
+    request: RouteRequest,
+    current_user: VerifiedUser = Depends(get_current_user),
+    repositories: RepositoryBundle = Depends(get_repositories),
+):
+    logger.info(
+        "compute_itinerary_routes itinerary_id=%s day_index=%s modes=%s",
+        itinerary_id, request.day_index, request.modes,
+    )
+    _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
+    client = GoogleMapsClient()
+    segments: list[RouteSegmentSchema] = []
+    for i in range(len(request.stops) - 1):
+        origin_coords = request.stops[i]
+        dest_coords = request.stops[i + 1]
+        origin = Coordinates(latitude=origin_coords.lat, longitude=origin_coords.lng)
+        destination = Coordinates(latitude=dest_coords.lat, longitude=dest_coords.lng)
+        for mode in request.modes:
+            try:
+                route = client.compute_route(
+                    origin=origin,
+                    destination=destination,
+                    travel_mode=mode,
+                )
+                routes_list = route.get("routes", [])
+                if not routes_list:
+                    continue
+                route_data = routes_list[0]
+                duration_str = route_data.get("duration", "0s")
+                duration_seconds = _parse_duration(duration_str)
+                distance_meters = route_data.get("distanceMeters", 0)
+                polyline = route_data.get("polyline", {})
+                encoded = polyline.get("encodedPolyline", "")
+                segments.append(
+                    RouteSegmentSchema(
+                        from_stop_index=i,
+                        to_stop_index=i + 1,
+                        mode=mode,
+                        duration_seconds=duration_seconds,
+                        distance_meters=distance_meters,
+                        encoded_polyline=encoded,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("compute_route failed %s->%s mode=%s: %s", i, i + 1, mode, exc)
+                continue
+
+    return RouteSegmentsResponse(segments=segments)
+
+
+@router.post("/itineraries/{itinerary_id}/chat", response_model=ChatResponse)
+def chat_with_itinerary_agent(
+    itinerary_id: str,
+    request: ChatRequest,
+    current_user: VerifiedUser = Depends(get_current_user),
+    repositories: RepositoryBundle = Depends(get_repositories),
+):
+    logger.info("chat_with_itinerary_agent itinerary_id=%s day_index=%s", itinerary_id, request.day_index)
+    itinerary = _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
+    try:
+        from app.services.planning import ChatAgentService
+
+        agent = ChatAgentService()
+        result = agent.process_message(
+            message=request.message,
+            itinerary=itinerary,
+            day_index=request.day_index,
+        )
+    except Exception as exc:
+        logger.exception("chat agent failed itinerary_id=%s", itinerary_id)
+        return ChatResponse(
+            agent_message="Sorry, the chat agent encountered an error.",
+            action="rejected",
+        )
+
+    action = result.get("action")
+    new_stop = result.get("new_stop")
+    insert_idx = result.get("insert_before_index")
+
+    if action == "insert_stop" and new_stop is not None and insert_idx is not None:
+        itinerary.days[request.day_index].stops.insert(insert_idx, new_stop)
+        repositories.itineraries.update(itinerary.id, itinerary)
+        _audit(repositories, current_user.uid, "chat.insert_stop", "itinerary", itinerary.id)
+        return ChatResponse(
+            agent_message=result.get("agent_message", "Stop added."),
+            action="insert_stop",
+            updated_itinerary=itinerary,
+        )
+
+    return ChatResponse(
+        agent_message=result.get(
+            "agent_message",
+            "I can only help with adding activities to this itinerary.",
+        ),
+        action=action or "rejected",
+    )
+
+
+def _parse_duration(duration_str: str) -> int:
+    """Parse a duration string like '123s' or '1h30m' into seconds."""
+    import re
+    total = 0
+    match = re.match(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", duration_str)
+    if match:
+        hours = int(match.group(1)) if match.group(1) else 0
+        minutes = int(match.group(2)) if match.group(2) else 0
+        seconds = int(match.group(3)) if match.group(3) else 0
+        total = hours * 3600 + minutes * 60 + seconds
+    return total
 
 
 @router.put("/itineraries/{itinerary_id}", response_model=Itinerary)

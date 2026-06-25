@@ -227,6 +227,8 @@ class TripBrief(DomainModel):
     day_rules: list[DayRule] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     must_visit_places: list[str] = Field(default_factory=list)
+    radius_km: float | None = Field(default=None, ge=0)
+    preferred_transport_modes: list[str] = Field(default_factory=list)
 
 
 class SourceEvidence(DomainModel):
