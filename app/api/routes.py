@@ -2,10 +2,6 @@ import logging
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.exceptions import RequestValidationError
-from starlette.responses import JSONResponse
-
-logger = logging.getLogger(__name__)
 
 from app.api.dependencies import (
     RepositoryBundle,
@@ -29,6 +25,7 @@ from app.api.schemas import (
     RouteRequest,
     RouteSegmentSchema,
     RouteSegmentsResponse,
+    StopCoordinateResult,
     default_preferences,
     utc_timestamp,
 )
@@ -53,6 +50,7 @@ from app.services.maps import Coordinates, GoogleMapsClient, MapsIntegrationErro
 from app.services.planning import ADKPlanningWorkflowService, PlanningWorkflowError, sanitize_agent_message
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["v1"])
 
 
@@ -107,7 +105,7 @@ def places_autocomplete(
         suggestions = client.places_autocomplete(input=input, types=types)
     except MapsIntegrationError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
-    except Exception as exc:
+    except Exception:
         logger.exception("places_autocomplete failed input=%s", input)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Autocomplete service unavailable.")
     return PlacesAutocompleteResponse(
@@ -206,15 +204,44 @@ def compute_itinerary_routes(
         "compute_itinerary_routes itinerary_id=%s day_index=%s modes=%s",
         itinerary_id, request.day_index, request.modes,
     )
-    _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
+    itinerary = _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
+
+    if request.day_index < 0 or request.day_index >= len(itinerary.days):
+        return RouteSegmentsResponse(segments=[], stop_coordinates=[])
+
+    day = itinerary.days[request.day_index]
     client = GoogleMapsClient()
+    allowed_modes = {"WALKING", "DRIVING", "TRANSIT", "BICYCLING", "WALK", "DRIVE", "BICYCLE"}
+    requested_modes = request.modes or itinerary.brief.preferred_transport_modes or ["WALKING"]
+    modes = [mode for mode in requested_modes if mode in allowed_modes]
+    if not modes:
+        modes = ["WALKING"]
+
+    # Geocode each stop name to get real coordinates
+    stop_coords: list[StopCoordinateResult] = []
+    for i, stop in enumerate(day.stops):
+        try:
+            coords = client.geocode(f"{stop.name}, {itinerary.brief.region}")
+            if coords is not None:
+                stop_coords.append(
+                    StopCoordinateResult(
+                        index=i,
+                        name=stop.name,
+                        lat=coords.latitude,
+                        lng=coords.longitude,
+                    )
+                )
+            else:
+                logger.warning("geocode returned None for stop=%s", stop.name)
+        except Exception as exc:
+            logger.warning("geocode failed for stop=%s: %s", stop.name, exc)
+
+    # Compute routes between real coordinates for each mode
     segments: list[RouteSegmentSchema] = []
-    for i in range(len(request.stops) - 1):
-        origin_coords = request.stops[i]
-        dest_coords = request.stops[i + 1]
-        origin = Coordinates(latitude=origin_coords.lat, longitude=origin_coords.lng)
-        destination = Coordinates(latitude=dest_coords.lat, longitude=dest_coords.lng)
-        for mode in request.modes:
+    for i in range(len(stop_coords) - 1):
+        origin = Coordinates(latitude=stop_coords[i].lat, longitude=stop_coords[i].lng)
+        destination = Coordinates(latitude=stop_coords[i + 1].lat, longitude=stop_coords[i + 1].lng)
+        for mode in modes:
             try:
                 route = client.compute_route(
                     origin=origin,
@@ -232,19 +259,21 @@ def compute_itinerary_routes(
                 encoded = polyline.get("encodedPolyline", "")
                 segments.append(
                     RouteSegmentSchema(
-                        from_stop_index=i,
-                        to_stop_index=i + 1,
+                        from_stop_index=stop_coords[i].index,
+                        to_stop_index=stop_coords[i + 1].index,
                         mode=mode,
                         duration_seconds=duration_seconds,
                         distance_meters=distance_meters,
                         encoded_polyline=encoded,
                     )
                 )
+                break
             except Exception as exc:
                 logger.warning("compute_route failed %s->%s mode=%s: %s", i, i + 1, mode, exc)
                 continue
 
-    return RouteSegmentsResponse(segments=segments)
+    logger.info("computed %d segments for %d stops", len(segments), len(stop_coords))
+    return RouteSegmentsResponse(segments=segments, stop_coordinates=stop_coords)
 
 
 @router.post("/itineraries/{itinerary_id}/chat", response_model=ChatResponse)
@@ -265,7 +294,7 @@ def chat_with_itinerary_agent(
             itinerary=itinerary,
             day_index=request.day_index,
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("chat agent failed itinerary_id=%s", itinerary_id)
         return ChatResponse(
             agent_message="Sorry, the chat agent encountered an error.",
@@ -281,6 +310,8 @@ def chat_with_itinerary_agent(
 
     if action == "insert_stop" and new_stop is not None and insert_idx is not None:
         itinerary.days[request.day_index].stops.insert(insert_idx, new_stop)
+        for order, stop in enumerate(itinerary.days[request.day_index].stops, start=1):
+            stop.suggested_order = order
         repositories.itineraries.update(itinerary.id, itinerary)
         _audit(repositories, current_user.uid, "chat.insert_stop", "itinerary", itinerary.id)
         return ChatResponse(
@@ -474,7 +505,13 @@ def ingest_location_event(
     repositories: RepositoryBundle = Depends(get_repositories),
     active_event_service: ActiveEventWorkflowService = Depends(get_active_event_service),
 ) -> ActiveEventIngestionResult:
-    logger.info("ingest_location_event user=%s itinerary_id=%s lat=%s lng=%s", current_user.uid, itinerary_id, request.latitude, request.longitude)
+    logger.info(
+        "ingest_location_event user=%s itinerary_id=%s lat=%s lng=%s",
+        current_user.uid,
+        itinerary_id,
+        request.location.latitude,
+        request.location.longitude,
+    )
     itinerary = _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
     event = request.to_location_event(
         event_id=f"loc-{uuid4().hex}",

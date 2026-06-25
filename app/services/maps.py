@@ -152,6 +152,16 @@ class GoogleMapsClient:
             suggestions.append(PlacesAutocompleteSuggestion(place_id=place_id, description=description))
         return suggestions[:max_results]
 
+    _ROUTES_MODE_MAP = {
+        "WALKING": "WALK",
+        "DRIVING": "DRIVE",
+        "BICYCLING": "BICYCLE",
+        "TRANSIT": "TRANSIT",
+        "WALK": "WALK",
+        "DRIVE": "DRIVE",
+        "BICYCLE": "BICYCLE",
+    }
+
     def compute_route(
         self,
         *,
@@ -159,6 +169,7 @@ class GoogleMapsClient:
         destination: Coordinates,
         travel_mode: str = "WALK",
     ) -> dict[str, Any]:
+        routes_mode = self._ROUTES_MODE_MAP.get(travel_mode, "WALK")
         self._require_api_key()
         response = self.http_client.post(
             self.ROUTES_COMPUTE_URL,
@@ -184,7 +195,7 @@ class GoogleMapsClient:
                         }
                     }
                 },
-                "travelMode": travel_mode,
+                "travelMode": routes_mode,
             },
         )
         response.raise_for_status()

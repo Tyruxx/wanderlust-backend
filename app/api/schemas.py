@@ -112,9 +112,8 @@ class StopCoordinateSchema(BaseModel):
 
 
 class RouteRequest(BaseModel):
-    day_index: int
-    stops: list[StopCoordinateSchema]
-    modes: list[str]
+    day_index: int = Field(ge=0)
+    modes: list[str] = Field(default_factory=list, max_length=4)
 
 
 class RouteSegmentSchema(BaseModel):
@@ -126,13 +125,21 @@ class RouteSegmentSchema(BaseModel):
     encoded_polyline: str
 
 
+class StopCoordinateResult(BaseModel):
+    index: int
+    name: str
+    lat: float
+    lng: float
+
+
 class RouteSegmentsResponse(BaseModel):
     segments: list[RouteSegmentSchema]
+    stop_coordinates: list[StopCoordinateResult]
 
 
 class ChatRequest(BaseModel):
-    message: str
-    day_index: int
+    message: str = Field(min_length=1, max_length=1000)
+    day_index: int = Field(ge=0)
 
 
 class ChatResponse(BaseModel):
