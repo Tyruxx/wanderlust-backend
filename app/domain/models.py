@@ -23,8 +23,17 @@ class TravelPace(str, Enum):
 class BudgetPosture(str, Enum):
     BUDGET = "budget"
     MID_RANGE = "mid_range"
+    MODERATE = "mid_range"  # alias
     LUXURY = "luxury"
     FLEXIBLE = "flexible"
+
+    @classmethod
+    def _missing_(cls, value: str) -> object | None:
+        aliases = {"moderate": "mid_range"}
+        normalised = aliases.get(value.lower())
+        if normalised is not None:
+            return cls(normalised)
+        return None
 
 
 class DayRhythm(str, Enum):
@@ -33,6 +42,14 @@ class DayRhythm(str, Enum):
     AFTERNOON_BREAK = "afternoon_break"
     LATE_NIGHT = "late_night"
     FLEXIBLE = "flexible"
+
+    @classmethod
+    def _missing_(cls, value: str) -> object | None:
+        aliases = {"early start": "early_start"}
+        normalised = aliases.get(value.lower())
+        if normalised is not None:
+            return cls(normalised)
+        return None
 
 
 class SourceType(str, Enum):
