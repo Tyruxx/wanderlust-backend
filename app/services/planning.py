@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.core.settings import get_settings
 from app.domain.models import (
     DayPlan,
+    DayRule,
     Itinerary,
     ItineraryStatus,
     PlaceStop,
@@ -227,13 +228,15 @@ class ADKPlanningWorkflowService:
                     )
                 )
 
+            rule = _day_rule_for(day.day_number, brief.day_rules)
             days.append(
                 DayPlan(
                     day_number=day.day_number,
-                    start_location=day.start_location,
-                    end_location=day.end_location,
-                    start_time=_parse_time(day.start_time),
-                    end_time=_parse_time(day.end_time),
+                    day_date=rule.start_date if rule and rule.start_date == rule.end_date else None,
+                    start_location=rule.start_place if rule else day.start_location,
+                    end_location=rule.end_place if rule else day.end_location,
+                    start_time=rule.start_time if rule else _parse_time(day.start_time),
+                    end_time=rule.end_time if rule else _parse_time(day.end_time),
                     stops=stops,
                     backup_options=day.backup_options,
                 )
@@ -335,7 +338,14 @@ def _planner_prompt(
                 "Use candidate places and constraints; do not invent unsupported place facts.",
                 "Do not include bookings, purchases, or calls.",
                 "Low-confidence or social-only claims must be marked exploratory or omitted.",
+                "The trip description is a high-priority user intent constraint, not background flavor.",
+                "Day rules are mandatory: preserve each day's start/end place and start/end time exactly.",
             ],
+            "trip_description_priority": (
+                "Plan stops, pacing, and explanations around this request: "
+                f"{brief.description}"
+            ),
+            "mandatory_day_rules": [rule.model_dump(mode="json") for rule in brief.day_rules],
             "radius_km_guide": (
                 f"Activities should preferably be within {brief.radius_km} km of {brief.region}. "
                 "This is a flexible guide, not a hard constraint."
@@ -407,6 +417,7 @@ class ChatAgentService:
         message: str,
         itinerary: Itinerary,
         day_index: int,
+        insert_before_index: int | None = None,
     ) -> dict[str, Any]:
         """Process a chat message about inserting a stop into a day plan.
 
@@ -427,6 +438,14 @@ class ChatAgentService:
             }
 
         day = itinerary.days[day_index]
+        constrained_insert_index = _clamp_insert_index(insert_before_index, len(day.stops))
+        previous_stop = None
+        next_stop = None
+        if constrained_insert_index is not None:
+            if constrained_insert_index > 0:
+                previous_stop = day.stops[constrained_insert_index - 1].name
+            if constrained_insert_index < len(day.stops):
+                next_stop = day.stops[constrained_insert_index].name
         stops_json = [
             {
                 "index": i,
@@ -457,7 +476,18 @@ class ChatAgentService:
                     "day_number": day.day_number,
                     "start_location": day.start_location,
                     "end_location": day.end_location,
+                    "start_time": day.start_time.isoformat(timespec="minutes"),
+                    "end_time": day.end_time.isoformat(timespec="minutes"),
                     "current_stops": stops_json,
+                },
+                "requested_route_gap": {
+                    "insert_before_index": constrained_insert_index,
+                    "previous_stop": previous_stop,
+                    "next_stop": next_stop,
+                    "instruction": (
+                        "If insert_before_index is not null, insert the activity in this exact gap. "
+                        "Do not choose another insertion point."
+                    ),
                 },
                 "user_message": message,
                 "response_schema": {
@@ -477,6 +507,7 @@ class ChatAgentService:
                     "Reject anything unrelated: weather, hotels, flights, general questions, off-topic chat.",
                     "Do not generate fake place names — use realistic, well-known places suitable for the region.",
                     "The new stop must fit between the existing stops logically.",
+                    "Respect the trip description and day start/end constraints.",
                 ],
             },
             ensure_ascii=True,
@@ -511,13 +542,12 @@ class ChatAgentService:
         action = result.get("action")
         if action == "insert_stop":
             stop_data = result.get("new_stop", {})
-            insert_idx = result.get("insert_before_index")
-            if insert_idx is None or not isinstance(insert_idx, int):
-                insert_idx = len(day.stops)
-            if insert_idx < 0:
-                insert_idx = 0
-            if insert_idx > len(day.stops):
-                insert_idx = len(day.stops)
+            insert_idx = constrained_insert_index
+            if insert_idx is None:
+                insert_idx = result.get("insert_before_index")
+                if insert_idx is None or not isinstance(insert_idx, int):
+                    insert_idx = len(day.stops)
+                insert_idx = _clamp_insert_index(insert_idx, len(day.stops))
 
             new_stop = PlaceStop(
                 id=f"stop-chat-{uuid4().hex[:8]}",
@@ -553,3 +583,20 @@ def _parse_time(value: str) -> time:
         return time(int(hour), int(minute))
     except Exception as exc:
         raise PlanningWorkflowError(f"Invalid planner time value: {value}") from exc
+
+
+def _day_rule_for(day_number: int, rules: list[DayRule]) -> DayRule | None:
+    for rule in rules:
+        if rule.start_day <= day_number <= rule.end_day:
+            return rule
+    return None
+
+
+def _clamp_insert_index(value: int | None, stop_count: int) -> int | None:
+    if value is None:
+        return None
+    if value < 0:
+        return 0
+    if value > stop_count:
+        return stop_count
+    return value

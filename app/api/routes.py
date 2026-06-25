@@ -283,7 +283,12 @@ def chat_with_itinerary_agent(
     current_user: VerifiedUser = Depends(get_current_user),
     repositories: RepositoryBundle = Depends(get_repositories),
 ):
-    logger.info("chat_with_itinerary_agent itinerary_id=%s day_index=%s", itinerary_id, request.day_index)
+    logger.info(
+        "chat_with_itinerary_agent itinerary_id=%s day_index=%s insert_before_index=%s",
+        itinerary_id,
+        request.day_index,
+        request.insert_before_index,
+    )
     itinerary = _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
     try:
         from app.services.planning import ChatAgentService
@@ -293,6 +298,7 @@ def chat_with_itinerary_agent(
             message=request.message,
             itinerary=itinerary,
             day_index=request.day_index,
+            insert_before_index=request.insert_before_index,
         )
     except Exception:
         logger.exception("chat agent failed itinerary_id=%s", itinerary_id)
@@ -309,6 +315,10 @@ def chat_with_itinerary_agent(
     )
 
     if action == "insert_stop" and new_stop is not None and insert_idx is not None:
+        if insert_idx < 0:
+            insert_idx = 0
+        if insert_idx > len(itinerary.days[request.day_index].stops):
+            insert_idx = len(itinerary.days[request.day_index].stops)
         itinerary.days[request.day_index].stops.insert(insert_idx, new_stop)
         for order, stop in enumerate(itinerary.days[request.day_index].stops, start=1):
             stop.suggested_order = order

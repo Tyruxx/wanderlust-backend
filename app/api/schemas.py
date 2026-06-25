@@ -140,6 +140,7 @@ class RouteSegmentsResponse(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
     day_index: int = Field(ge=0)
+    insert_before_index: int | None = Field(default=None, ge=0)
 
 
 class ChatResponse(BaseModel):

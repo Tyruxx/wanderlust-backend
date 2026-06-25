@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from datetime import date, time
 import unittest
 
-from app.domain.models import SourceConfidence, TravelPreferences, TripBrief
+from app.domain.models import (
+    DayPlan,
+    DayRule,
+    Itinerary,
+    ItineraryStatus,
+    PlaceStop,
+    SourceConfidence,
+    TravelPreferences,
+    TripBrief,
+)
 from app.services.maps import CandidatePlace, Coordinates
-from app.services.planning import ADKPlanningWorkflowService
+from app.services.planning import ADKPlanningWorkflowService, ChatAgentService, _planner_prompt
 
 
 class FakeMapsClient:
@@ -83,6 +93,31 @@ class SocialOnlyLowConfidencePlannerClient:
         }
 
 
+class FakeChatModels:
+    def generate_content(self, *, model, contents):  # noqa: ANN001
+        class Response:
+            text = """
+            {
+              "agent_message": "Added a garden stop in that gap.",
+              "action": "insert_stop",
+              "new_stop": {
+                "name": "Villa Borghese Gardens",
+                "suggested_order": 1,
+                "time_window": "11:00",
+                "what_to_do": "Walk through the gardens.",
+                "travel_time_assumption_minutes": 10
+              },
+              "insert_before_index": 99
+            }
+            """
+
+        return Response()
+
+
+class FakeChatClient:
+    models = FakeChatModels()
+
+
 class PlanningWorkflowTests(unittest.TestCase):
     def test_generate_itinerary_builds_validated_itinerary_with_adk_agent_names(self) -> None:
         service = ADKPlanningWorkflowService(
@@ -113,6 +148,119 @@ class PlanningWorkflowTests(unittest.TestCase):
         self.assertIn("trip_intake_agent", result.agent_names)
         self.assertIn("verification_agent", result.agent_names)
         self.assertGreaterEqual(len(result.evidence), 1)
+
+    def test_day_rules_override_planner_start_end_places_and_times(self) -> None:
+        service = ADKPlanningWorkflowService(
+            maps_client=FakeMapsClient(),  # type: ignore[arg-type]
+            planner_client=FakePlannerClient(),
+        )
+
+        result = service.generate_itinerary(
+            user_id="user-1",
+            brief=TripBrief(
+                region="Singapore",
+                description="Food and photography",
+                trip_length_days=1,
+                day_rules=[
+                    DayRule(
+                        start_day=1,
+                        end_day=1,
+                        start_date=date(2026, 7, 1),
+                        end_date=date(2026, 7, 1),
+                        start_place="Changi Airport",
+                        end_place="Marina Bay Sands",
+                        start_time=time(8, 30),
+                        end_time=time(21, 15),
+                    ),
+                ],
+            ),
+            preferences=TravelPreferences(
+                user_id="user-1",
+                version=4,
+                onboarding_required=False,
+            ),
+        )
+
+        day = result.itinerary.days[0]
+        self.assertEqual(day.start_location, "Changi Airport")
+        self.assertEqual(day.end_location, "Marina Bay Sands")
+        self.assertEqual(day.start_time, time(8, 30))
+        self.assertEqual(day.end_time, time(21, 15))
+
+    def test_planner_prompt_marks_description_and_day_rules_as_mandatory(self) -> None:
+        brief = TripBrief(
+            region="Rome",
+            description="Photography-focused ruins and quiet wine bars.",
+            trip_length_days=1,
+            day_rules=[
+                DayRule(
+                    start_day=1,
+                    end_day=1,
+                    start_place="Hotel Artemide",
+                    end_place="Roma Termini",
+                    start_time=time(9, 0),
+                    end_time=time(18, 0),
+                ),
+            ],
+        )
+
+        prompt = _planner_prompt(
+            brief,
+            TravelPreferences(user_id="user-1", onboarding_required=False),
+            [],
+            None,
+        )
+
+        self.assertIn("trip_description_priority", prompt)
+        self.assertIn("Photography-focused ruins", prompt)
+        self.assertIn("mandatory_day_rules", prompt)
+        self.assertIn("Hotel Artemide", prompt)
+
+    def test_chat_gap_insert_overrides_model_chosen_index(self) -> None:
+        service = ChatAgentService()
+        service._client = FakeChatClient()  # type: ignore[assignment]
+        itinerary = Itinerary(
+            id="itin-1",
+            user_id="user-1",
+            title="Rome",
+            status=ItineraryStatus.INACTIVE,
+            brief=TripBrief(region="Rome", description="Ruins", trip_length_days=1),
+            preference_version=1,
+            days=[
+                DayPlan(
+                    day_number=1,
+                    start_location="Hotel",
+                    end_location="Hotel",
+                    start_time=time(9, 0),
+                    end_time=time(18, 0),
+                    stops=[
+                        PlaceStop(
+                            id="stop-1",
+                            name="Colosseum",
+                            suggested_order=1,
+                            what_to_do="Explore.",
+                        ),
+                        PlaceStop(
+                            id="stop-2",
+                            name="Pantheon",
+                            suggested_order=2,
+                            what_to_do="Visit.",
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        result = service.process_message(
+            "Add a calm garden walk here",
+            itinerary,
+            day_index=0,
+            insert_before_index=1,
+        )
+
+        self.assertEqual(result["action"], "insert_stop")
+        self.assertEqual(result["insert_before_index"], 1)
+        self.assertEqual(result["new_stop"].name, "Villa Borghese Gardens")
 
     def test_low_confidence_output_without_supporting_evidence_is_not_persisted_as_recommendation(self) -> None:
         service = ADKPlanningWorkflowService(
