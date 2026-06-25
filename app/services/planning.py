@@ -366,6 +366,26 @@ def _parse_json_response(text: str) -> dict[str, Any]:
         raise PlanningWorkflowError("Planner response was not valid JSON.") from exc
 
 
+def sanitize_agent_message(text: str, max_length: int = 2000) -> str:
+    """Strip content that could leak system context, prompts, or be harmful."""
+    import re
+    if not text:
+        return ""
+    text = text.strip()
+    # Remove markdown code blocks (could contain leaked prompts or instructions)
+    text = re.sub(r"```[\s\S]*?```", "", text)
+    # Remove inline code spans
+    text = re.sub(r"`[^`]+`", "", text)
+    # Strip HTML tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Collapse multiple blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    # Truncate
+    if len(text) > max_length:
+        text = text[:max_length].rstrip() + "..."
+    return text.strip()
+
+
 class ChatAgentService:
     def __init__(self) -> None:
         settings = get_settings()

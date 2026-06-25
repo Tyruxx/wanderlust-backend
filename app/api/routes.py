@@ -50,7 +50,7 @@ from app.services.guardrails import (
 )
 from app.services.repositories import AuditLogEntry
 from app.services.maps import Coordinates, GoogleMapsClient, MapsIntegrationError
-from app.services.planning import ADKPlanningWorkflowService, PlanningWorkflowError
+from app.services.planning import ADKPlanningWorkflowService, PlanningWorkflowError, sanitize_agent_message
 
 
 router = APIRouter(prefix="/v1", tags=["v1"])
@@ -275,22 +275,23 @@ def chat_with_itinerary_agent(
     action = result.get("action")
     new_stop = result.get("new_stop")
     insert_idx = result.get("insert_before_index")
+    agent_message = sanitize_agent_message(
+        result.get("agent_message", "")
+    )
 
     if action == "insert_stop" and new_stop is not None and insert_idx is not None:
         itinerary.days[request.day_index].stops.insert(insert_idx, new_stop)
         repositories.itineraries.update(itinerary.id, itinerary)
         _audit(repositories, current_user.uid, "chat.insert_stop", "itinerary", itinerary.id)
         return ChatResponse(
-            agent_message=result.get("agent_message", "Stop added."),
+            agent_message=agent_message or "Stop added.",
             action="insert_stop",
             updated_itinerary=itinerary,
         )
 
     return ChatResponse(
-        agent_message=result.get(
-            "agent_message",
-            "I can only help with adding activities to this itinerary.",
-        ),
+        agent_message=agent_message
+        or "I can only help with adding activities to this itinerary.",
         action=action or "rejected",
     )
 
