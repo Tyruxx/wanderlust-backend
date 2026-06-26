@@ -450,6 +450,46 @@ class PlanningWorkflowTests(unittest.TestCase):
         self.assertEqual(offer["booking_call_offer"].details.reservation_name, "Ada")
         self.assertEqual(offer["booking_call_offer"].details.venue_phone, "+15551234567")
 
+    def test_chat_booking_request_extracts_labeled_conversation_details(self) -> None:
+        itinerary = _chat_itinerary()
+        service = ChatAgentService()
+        service.booking_service = BookingCallService(
+            maps_client=FakeBookingMapsClient(),  # type: ignore[arg-type]
+        )
+
+        result = service.process_message(
+            "date/time: tomorrow, party size: 2 people, reservation name: Benjamin, "
+            "callback phone: +6512345678. This restaurant phone number has been "
+            "changed to +6580241976 recently, so call this number instead",
+            itinerary,
+            day_index=0,
+            target_stop_index=0,
+        )
+
+        offer = result["booking_call_offer"]
+        self.assertEqual(offer.missing_fields, [])
+        self.assertEqual(offer.details.reservation_datetime, "tomorrow")
+        self.assertEqual(offer.details.party_size, 2)
+        self.assertEqual(offer.details.reservation_name, "Benjamin")
+        self.assertEqual(offer.details.callback_phone, "+6512345678")
+        self.assertEqual(offer.details.venue_phone, "+6580241976")
+
+    def test_chat_booking_request_asks_one_friendly_missing_question(self) -> None:
+        itinerary = _chat_itinerary()
+        service = ChatAgentService()
+
+        result = service.process_message(
+            "Book a table",
+            itinerary,
+            day_index=0,
+            target_stop_index=0,
+        )
+
+        self.assertEqual(result["action"], "booking_info")
+        self.assertIn("one step at a time", result["agent_message"])
+        self.assertIn("When should I try to book it for?", result["agent_message"])
+        self.assertNotIn("reservation_datetime", result["agent_message"])
+
     def test_low_confidence_output_without_supporting_evidence_is_not_persisted_as_recommendation(self) -> None:
         service = ADKPlanningWorkflowService(
             maps_client=FakeMapsClient(),  # type: ignore[arg-type]

@@ -1094,11 +1094,10 @@ def _maybe_build_booking_offer(
         details=details,
     )
     if details is None or offer.missing_fields:
-        missing = ", ".join(offer.missing_fields)
         return {
-            "agent_message": (
-                "I can help with that booking. Please send the missing details: "
-                f"{missing}."
+            "agent_message": _friendly_missing_booking_prompt(
+                offer.missing_fields,
+                itinerary.days[day_index].stops[target_stop_index].name,
             ),
             "action": "booking_info",
             "booking_call_offer": offer,
@@ -1122,27 +1121,120 @@ def _looks_like_booking_request(message: str) -> bool:
 
 
 def _extract_booking_details(message: str, venue_name: str) -> BookingDetails | None:
-    party_match = re.search(r"\b(?:for|party of)\s+(\d{1,2})\b", message, re.I)
-    name_match = re.search(r"\b(?:under|name)\s+([A-Za-z][A-Za-z .'-]{1,80})", message, re.I)
-    phone_match = re.search(r"(\+?\d[\d\s().-]{5,}\d)", message)
-    time_match = re.search(
-        r"((?:today|tomorrow|tonight|on\s+[A-Za-z0-9, ]+)?\s*(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)",
-        message,
-        re.I,
-    )
-    if not (party_match and name_match and phone_match and time_match):
+    reservation_datetime = _extract_booking_datetime(message)
+    party_size = _extract_party_size(message)
+    reservation_name = _extract_reservation_name(message)
+    callback_phone = _extract_callback_phone(message)
+    if not (reservation_datetime and party_size and reservation_name and callback_phone):
         return None
     try:
         return BookingDetails(
             venue_name=venue_name,
-            reservation_datetime=time_match.group(1).strip(),
-            party_size=int(party_match.group(1)),
-            reservation_name=name_match.group(1).strip().rstrip("."),
-            callback_phone=phone_match.group(1).strip(),
+            venue_phone=_extract_venue_phone_override(message, callback_phone),
+            reservation_datetime=reservation_datetime,
+            party_size=party_size,
+            reservation_name=reservation_name,
+            callback_phone=callback_phone,
             special_requests=_extract_special_requests(message),
         )
     except Exception:
         return None
+
+
+_BOOKING_QUESTIONS = {
+    "reservation_datetime": "When should I try to book it for?",
+    "party_size": "How many people should I book for?",
+    "reservation_name": "What name should the reservation be under?",
+    "callback_phone": "What callback number should the venue use if they need to reach you?",
+}
+
+
+def _friendly_missing_booking_prompt(missing_fields: list[str], venue_name: str) -> str:
+    first_missing = next((field for field in missing_fields if field in _BOOKING_QUESTIONS), None)
+    if first_missing is None:
+        return f"I can help prepare the booking for {venue_name}. What booking detail should I use?"
+    return f"Let's book {venue_name} one step at a time. {_BOOKING_QUESTIONS[first_missing]}"
+
+
+def _extract_labeled_value(message: str, labels: tuple[str, ...]) -> str | None:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    match = re.search(
+        rf"(?:^|[,\n.;])\s*(?:{label_pattern})\s*(?:is|=|:|-)?\s*(.+?)(?=(?:[,\n.;]\s*(?:date/time|date time|datetime|reservation time|time|party size|party|pax|people|reservation name|name|under|callback phone|callback number|phone|venue phone|restaurant phone|special request|special requests|notes?)\b)|[.;]\s|$)",
+        message,
+        re.I,
+    )
+    if not match:
+        return None
+    return match.group(1).strip().strip(" ,.;")
+
+
+def _extract_booking_datetime(message: str) -> str | None:
+    labeled = _extract_labeled_value(
+        message,
+        ("date/time", "date time", "datetime", "reservation datetime", "reservation time", "booking time", "time"),
+    )
+    if labeled:
+        return labeled[:120]
+    match = re.search(
+        r"\b((?:today|tomorrow|tonight|next\s+[A-Za-z]+|on\s+[A-Za-z0-9, ]+)(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b",
+        message,
+        re.I,
+    )
+    return match.group(1).strip()[:120] if match else None
+
+
+def _extract_party_size(message: str) -> int | None:
+    labeled = _extract_labeled_value(message, ("party size", "party", "pax", "people"))
+    if labeled:
+        match = re.search(r"\b(\d{1,2})\b", labeled)
+        if match:
+            return int(match.group(1))
+    match = re.search(r"\b(?:for|party of|table for)\s+(\d{1,2})\b", message, re.I)
+    return int(match.group(1)) if match else None
+
+
+def _extract_reservation_name(message: str) -> str | None:
+    labeled = _extract_labeled_value(message, ("reservation name", "name", "under"))
+    if labeled:
+        return labeled[:120].strip().rstrip(".")
+    match = re.search(r"\b(?:under|name)\s+([A-Za-z][A-Za-z .'-]{1,80})", message, re.I)
+    return match.group(1).strip().rstrip(".") if match else None
+
+
+def _extract_first_phone(text: str) -> str | None:
+    match = re.search(r"(\+?\d[\d\s().-]{5,}\d)", text)
+    if not match:
+        return None
+    return match.group(1).strip().strip(".,;")
+
+
+def _extract_callback_phone(message: str) -> str | None:
+    labeled = _extract_labeled_value(message, ("callback phone", "callback number", "contact phone", "my phone"))
+    if labeled:
+        phone = _extract_first_phone(labeled)
+        if phone:
+            return phone
+    return _extract_first_phone(message)
+
+
+def _extract_venue_phone_override(message: str, callback_phone: str) -> str | None:
+    labeled = _extract_labeled_value(message, ("venue phone", "restaurant phone", "restaurant phone number", "venue number"))
+    candidates: list[str] = []
+    if labeled:
+        phone = _extract_first_phone(labeled)
+        if phone:
+            candidates.append(phone)
+    for pattern in (
+        r"(?:restaurant|venue)[^.\n]{0,80}?(?:changed|updated|new)[^+\d]{0,40}(\+?\d[\d\s().-]{5,}\d)",
+        r"(?:changed|updated)[^.\n]{0,80}?(?:restaurant|venue)[^+\d]{0,40}(\+?\d[\d\s().-]{5,}\d)",
+        r"(?:call|use)\s+(?:this\s+)?(?:restaurant\s+|venue\s+)?number\s+instead[^+\d]{0,40}(\+?\d[\d\s().-]{5,}\d)",
+        r"(\+?\d[\d\s().-]{5,}\d)\D*(?:instead|venue|restaurant)",
+    ):
+        candidates.extend(match.strip().strip(".,;") for match in re.findall(pattern, message, re.I))
+    for candidate in candidates:
+        if candidate != callback_phone:
+            return candidate
+    return None
 
 
 def _extract_special_requests(message: str) -> str | None:
