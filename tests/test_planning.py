@@ -14,7 +14,13 @@ from app.domain.models import (
     TripBrief,
 )
 from app.services.maps import CandidatePlace, Coordinates
-from app.services.planning import ADKPlanningWorkflowService, ChatAgentService, _planner_prompt
+from app.services.planning import (
+    ADKPlanningWorkflowService,
+    ChatAgentService,
+    GroundedCitation,
+    GroundedSearchCandidate,
+    _planner_prompt,
+)
 
 
 class FakeMapsClient:
@@ -39,7 +45,11 @@ class FakeMapsClient:
 
 
 class FakePlannerClient:
-    def generate_plan(self, *, brief, preferences, candidates, weather):
+    def __init__(self) -> None:
+        self.search_candidates = []
+
+    def generate_plan(self, *, brief, preferences, candidates, search_candidates=None, weather):
+        self.search_candidates = search_candidates or []
         return {
             "title": "Singapore Food Weekend",
             "days": [
@@ -118,6 +128,42 @@ class FakeChatClient:
     models = FakeChatModels()
 
 
+class FakeSearchClient:
+    def search(self, *, agent_name, brief, preferences, focus, max_candidates=4):
+        return [
+            GroundedSearchCandidate(
+                name="National Gallery Singapore",
+                category="culture",
+                match_reason=f"{agent_name} found a photography-friendly museum.",
+                confidence=SourceConfidence.HIGH,
+                citations=[
+                    GroundedCitation(
+                        title="Official gallery site",
+                        url="https://www.nationalgallery.sg",
+                    )
+                ],
+            )
+        ]
+
+
+class StaticChatModels:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def generate_content(self, *, model, contents):  # noqa: ANN001
+        class Response:
+            pass
+
+        response = Response()
+        response.text = self.text
+        return response
+
+
+class StaticChatClient:
+    def __init__(self, text: str) -> None:
+        self.models = StaticChatModels(text)
+
+
 class PlanningWorkflowTests(unittest.TestCase):
     def test_generate_itinerary_builds_validated_itinerary_with_adk_agent_names(self) -> None:
         service = ADKPlanningWorkflowService(
@@ -187,6 +233,34 @@ class PlanningWorkflowTests(unittest.TestCase):
         self.assertEqual(day.start_time, time(8, 30))
         self.assertEqual(day.end_time, time(21, 15))
 
+    def test_parallel_grounded_search_candidates_are_deduped_and_passed_to_planner(self) -> None:
+        planner = FakePlannerClient()
+        service = ADKPlanningWorkflowService(
+            maps_client=FakeMapsClient(),  # type: ignore[arg-type]
+            planner_client=planner,
+            search_client=FakeSearchClient(),  # type: ignore[arg-type]
+        )
+
+        result = service.generate_itinerary(
+            user_id="user-1",
+            brief=TripBrief(
+                region="Singapore",
+                description="Photography and culture",
+                trip_length_days=1,
+            ),
+            preferences=TravelPreferences(
+                user_id="user-1",
+                onboarding_required=False,
+                interests=["photography"],
+            ),
+        )
+
+        self.assertEqual(len(planner.search_candidates), 1)
+        self.assertEqual(planner.search_candidates[0].name, "National Gallery Singapore")
+        self.assertTrue(
+            any(evidence.url == "https://www.nationalgallery.sg" for evidence in result.evidence)
+        )
+
     def test_planner_prompt_marks_description_and_day_rules_as_mandatory(self) -> None:
         brief = TripBrief(
             region="Rome",
@@ -207,6 +281,7 @@ class PlanningWorkflowTests(unittest.TestCase):
         prompt = _planner_prompt(
             brief,
             TravelPreferences(user_id="user-1", onboarding_required=False),
+            [],
             [],
             None,
         )
@@ -262,6 +337,82 @@ class PlanningWorkflowTests(unittest.TestCase):
         self.assertEqual(result["insert_before_index"], 1)
         self.assertEqual(result["new_stop"].name, "Villa Borghese Gardens")
 
+    def test_chat_timing_transport_recommendation_and_rewrite_actions_are_validated(self) -> None:
+        itinerary = _chat_itinerary()
+
+        timing = ChatAgentService()
+        timing._client = StaticChatClient(
+            """
+            {
+              "agent_message": "Moved the Colosseum later.",
+              "action": "update_timing",
+              "timing_update": {"target_stop_index": 0, "time_window": "11:30 AM"}
+            }
+            """
+        )  # type: ignore[assignment]
+        timing_result = timing.process_message("Move the first stop later", itinerary, day_index=0)
+        self.assertEqual(timing_result["action"], "update_timing")
+        self.assertEqual(timing_result["timing_update"]["target_stop_index"], 0)
+
+        transport = ChatAgentService()
+        transport._client = StaticChatClient(
+            """
+            {
+              "agent_message": "Switched to transit.",
+              "action": "update_transport_mode",
+              "transport_update": {"preferred_transport_modes": ["TRANSIT", "FLYING"]}
+            }
+            """
+        )  # type: ignore[assignment]
+        transport_result = transport.process_message("Use buses instead", itinerary, day_index=0)
+        self.assertEqual(transport_result["action"], "update_transport_mode")
+        self.assertEqual(
+            transport_result["transport_update"]["preferred_transport_modes"],
+            ["TRANSIT"],
+        )
+
+        recommend = ChatAgentService()
+        recommend._client = StaticChatClient(
+            """
+            {
+              "agent_message": "Try these nearby ideas.",
+              "action": "recommend",
+              "recommendations": [
+                {
+                  "title": "Forum viewpoint",
+                  "description": "A good photo angle near the route.",
+                  "confidence": "high",
+                  "sources": ["Official tourism site"]
+                }
+              ]
+            }
+            """
+        )  # type: ignore[assignment]
+        recommend_result = recommend.process_message("Any recommendation?", itinerary, day_index=0)
+        self.assertEqual(recommend_result["action"], "recommend")
+        self.assertEqual(recommend_result["recommendations"][0]["confidence"], "high")
+
+        rewrite = ChatAgentService()
+        proposed = itinerary.model_copy(deep=True)
+        proposed.title = "New Rome Day"
+        rewrite._client = StaticChatClient(
+            """
+            {
+              "agent_message": "Review this rewrite.",
+              "action": "propose_rewrite",
+              "proposal": {
+                "title": "New Rome Day",
+                "summary": "A gentler route.",
+                "proposed_itinerary": %s
+              }
+            }
+            """
+            % proposed.model_dump_json()
+        )  # type: ignore[assignment]
+        rewrite_result = rewrite.process_message("Redo the itinerary", itinerary, day_index=0)
+        self.assertEqual(rewrite_result["action"], "propose_rewrite")
+        self.assertEqual(rewrite_result["proposal"]["proposed_itinerary"].id, itinerary.id)
+
     def test_low_confidence_output_without_supporting_evidence_is_not_persisted_as_recommendation(self) -> None:
         service = ADKPlanningWorkflowService(
             maps_client=FakeMapsClient(),  # type: ignore[arg-type]
@@ -276,6 +427,39 @@ class PlanningWorkflowTests(unittest.TestCase):
 
         self.assertEqual(len(result.recommendations), 1)
         self.assertEqual(result.recommendations[0].confidence, SourceConfidence.LOW)
+
+def _chat_itinerary() -> Itinerary:
+    return Itinerary(
+        id="itin-1",
+        user_id="user-1",
+        title="Rome",
+        status=ItineraryStatus.INACTIVE,
+        brief=TripBrief(region="Rome", description="Ruins", trip_length_days=1),
+        preference_version=1,
+        days=[
+            DayPlan(
+                day_number=1,
+                start_location="Hotel",
+                end_location="Hotel",
+                start_time=time(9, 0),
+                end_time=time(18, 0),
+                stops=[
+                    PlaceStop(
+                        id="stop-1",
+                        name="Colosseum",
+                        suggested_order=1,
+                        what_to_do="Explore.",
+                    ),
+                    PlaceStop(
+                        id="stop-2",
+                        name="Pantheon",
+                        suggested_order=2,
+                        what_to_do="Visit.",
+                    ),
+                ],
+            ),
+        ],
+    )
 
 
 if __name__ == "__main__":

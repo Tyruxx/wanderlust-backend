@@ -3,7 +3,8 @@
 FastAPI backend for the Flutter app in `../smart_travel_itinerary_flutter`.
 
 Backend uses Google ADK 2.0 for agentic planning and active-itinerary workflows.
-Google Cloud is only required for external API calls (Gemini/Vertex AI and Google Maps Platform).
+Google Cloud is only required for external API calls (Gemini/Vertex AI, Gemini
+Google Search grounding, and Google Maps Platform).
 Backend runtime state is local SQLite only — no Firestore, no Pub/Sub, no
 Secret Manager. Flutter remains the local-first source of truth for traveler
 preferences and saved itineraries; backend requests use an `X-User-Id` device
@@ -23,7 +24,7 @@ Fill `.env` with your Gemini API key and/or Maps API key before making real serv
 
 ## Prerequisites for Real Service Calls
 
-- **Gemini / Vertex AI**: set `GOOGLE_API_KEY` in `.env` for Gemini, or configure Vertex AI via ADC.
+- **Gemini / Vertex AI / Google Search grounding**: set `GOOGLE_API_KEY` in `.env` for Gemini and grounded search, or configure Vertex AI via ADC for planner calls.
 - **Google Maps Platform**: set `GOOGLE_MAPS_BACKEND_API_KEY` in `.env`.
 - **Flutter Maps SDK**: set `GOOGLE_MAPS_IOS_API_KEY` in `.env` and pass via `--dart-define`.
 
@@ -33,3 +34,5 @@ Fill `.env` with your Gemini API key and/or Maps API key before making real serv
 - Never allow more than one ACTIVE itinerary.
 - Starting, stopping, completing, deleting, exporting, booking, and payment require explicit user action.
 - Social sources are discovery signals only and must be verified before becoming recommendations.
+- Google Search grounding output is untrusted evidence until schema validation,
+  dedupe, ranking, and recommendation guardrails pass.

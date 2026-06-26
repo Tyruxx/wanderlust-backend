@@ -299,6 +299,8 @@ def chat_with_itinerary_agent(
             itinerary=itinerary,
             day_index=request.day_index,
             insert_before_index=request.insert_before_index,
+            scope=request.scope,
+            target_stop_index=request.target_stop_index,
         )
     except Exception:
         logger.exception("chat agent failed itinerary_id=%s", itinerary_id)
@@ -328,6 +330,48 @@ def chat_with_itinerary_agent(
             agent_message=agent_message or "Stop added.",
             action="insert_stop",
             updated_itinerary=itinerary,
+        )
+
+    if action == "update_timing":
+        timing_update = result.get("timing_update", {})
+        stop_idx = timing_update.get("target_stop_index")
+        time_window = timing_update.get("time_window")
+        day = itinerary.days[request.day_index]
+        if isinstance(stop_idx, int) and 0 <= stop_idx < len(day.stops) and isinstance(time_window, str):
+            day.stops[stop_idx].time_window = time_window
+            repositories.itineraries.update(itinerary.id, itinerary)
+            _audit(repositories, current_user.uid, "chat.update_timing", "itinerary", itinerary.id)
+            return ChatResponse(
+                agent_message=agent_message or "Timing updated.",
+                action="update_timing",
+                updated_itinerary=itinerary,
+            )
+
+    if action == "update_transport_mode":
+        transport_update = result.get("transport_update", {})
+        modes = transport_update.get("preferred_transport_modes")
+        if isinstance(modes, list):
+            itinerary.brief.preferred_transport_modes = [str(mode) for mode in modes]
+            repositories.itineraries.update(itinerary.id, itinerary)
+            _audit(repositories, current_user.uid, "chat.update_transport_mode", "itinerary", itinerary.id)
+            return ChatResponse(
+                agent_message=agent_message or "Transport modes updated.",
+                action="update_transport_mode",
+                updated_itinerary=itinerary,
+            )
+
+    if action == "recommend":
+        return ChatResponse(
+            agent_message=agent_message or "Here are a few recommendations.",
+            action="recommend",
+            recommendations=result.get("recommendations", []),
+        )
+
+    if action == "propose_rewrite":
+        return ChatResponse(
+            agent_message=agent_message or "I prepared a rewrite proposal for review.",
+            action="propose_rewrite",
+            proposal=result.get("proposal"),
         )
 
     return ChatResponse(

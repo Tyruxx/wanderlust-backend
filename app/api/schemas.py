@@ -141,12 +141,29 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
     day_index: int = Field(ge=0)
     insert_before_index: int | None = Field(default=None, ge=0)
+    scope: str | None = Field(default=None, max_length=40)
+    target_stop_index: int | None = Field(default=None, ge=0)
+
+
+class ChatRecommendationSchema(BaseModel):
+    title: str
+    description: str
+    confidence: str = "medium"
+    sources: list[str] = Field(default_factory=list)
+
+
+class ChatProposalSchema(BaseModel):
+    title: str
+    summary: str
+    proposed_itinerary: Itinerary
 
 
 class ChatResponse(BaseModel):
     agent_message: str
-    action: str | None = None  # "insert_stop" | "rejected" | None
+    action: str | None = None
     updated_itinerary: Itinerary | None = None
+    recommendations: list[ChatRecommendationSchema] = Field(default_factory=list)
+    proposal: ChatProposalSchema | None = None
 
 
 class RecoveryDecisionResponse(BaseModel):

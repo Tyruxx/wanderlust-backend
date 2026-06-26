@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 from typing import Generic, TypeVar
 
 from fastapi.testclient import TestClient
@@ -166,6 +167,38 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(len(self.evidence.items), 1)
         self.assertEqual(len(self.recommendations.items), 1)
 
+    def test_chat_timing_mutation_persists_and_rewrite_proposal_does_not(self) -> None:
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(user_id="user-1", version=2, onboarding_required=False),
+        )
+        itinerary = self.client.post("/v1/itineraries", json=chat_itinerary_payload()).json()
+
+        with patch("app.services.planning.ChatAgentService", lambda: FakeTimingChatAgent()):
+            timing_response = self.client.post(
+                f"/v1/itineraries/{itinerary['id']}/chat",
+                json={"message": "Move the first stop later", "day_index": 0},
+            )
+
+        self.assertEqual(timing_response.status_code, 200)
+        self.assertEqual(timing_response.json()["action"], "update_timing")
+        stored = self.itineraries.get(itinerary["id"])
+        self.assertEqual(stored.days[0].stops[0].time_window if stored else None, "11:30 AM")
+
+        with patch("app.services.planning.ChatAgentService", lambda: FakeRewriteChatAgent()):
+            proposal_response = self.client.post(
+                f"/v1/itineraries/{itinerary['id']}/chat",
+                json={"message": "Redo the whole itinerary", "day_index": 0},
+            )
+
+        self.assertEqual(proposal_response.status_code, 200)
+        self.assertEqual(proposal_response.json()["action"], "propose_rewrite")
+        stored_after_proposal = self.itineraries.get(itinerary["id"])
+        self.assertEqual(
+            stored_after_proposal.days[0].stops[0].time_window if stored_after_proposal else None,
+            "11:30 AM",
+        )
+
     def test_start_requires_replacement_confirmation_then_switches_active_itinerary(self) -> None:
         self.preferences.create(
             "user-1",
@@ -296,6 +329,34 @@ def itinerary_payload(title: str = "Singapore Food Trip") -> dict[str, object]:
     }
 
 
+def chat_itinerary_payload() -> dict[str, object]:
+    payload = itinerary_payload("Rome Chat Trip")
+    payload["brief"] = {
+        "region": "Rome",
+        "description": "Historic sites and food",
+        "trip_length_days": 1,
+    }
+    payload["days"] = [
+        {
+            "day_number": 1,
+            "start_location": "Hotel",
+            "end_location": "Hotel",
+            "start_time": "09:00",
+            "end_time": "18:00",
+            "stops": [
+                {
+                    "id": "stop-1",
+                    "name": "Colosseum",
+                    "suggested_order": 1,
+                    "time_window": "10:00 AM",
+                    "what_to_do": "Explore the arena.",
+                }
+            ],
+        }
+    ]
+    return payload
+
+
 def location_event_payload(deviation_detected: bool = False) -> dict[str, object]:
     return {
         "location": {
@@ -313,6 +374,30 @@ def location_event_payload(deviation_detected: bool = False) -> dict[str, object
 class FakePublisher:
     def publish(self, event) -> str:
         return "fake-message-id"
+
+
+class FakeTimingChatAgent:
+    def process_message(self, **kwargs) -> dict[str, object]:
+        return {
+            "agent_message": "Moved the first stop later.",
+            "action": "update_timing",
+            "timing_update": {"target_stop_index": 0, "time_window": "11:30 AM"},
+        }
+
+
+class FakeRewriteChatAgent:
+    def process_message(self, **kwargs) -> dict[str, object]:
+        itinerary = kwargs["itinerary"].model_copy(deep=True)
+        itinerary.title = "Proposed rewrite"
+        return {
+            "agent_message": "Review this rewrite.",
+            "action": "propose_rewrite",
+            "proposal": {
+                "title": "Proposed rewrite",
+                "summary": "A safer preview only.",
+                "proposed_itinerary": itinerary,
+            },
+        }
 
 
 class FakePlanningService:
