@@ -21,6 +21,7 @@ from app.services.planning import (
     GroundedSearchCandidate,
     _planner_prompt,
 )
+from app.services.booking_calls import BookingCallService
 
 
 class FakeMapsClient:
@@ -146,6 +147,11 @@ class FakeSearchClient:
         ]
 
 
+class FakeBookingMapsClient:
+    def find_phone_number(self, query: str, *, region: str = "") -> str | None:
+        return "+15551234567"
+
+
 class StaticChatModels:
     def __init__(self, text: str) -> None:
         self.text = text
@@ -194,6 +200,11 @@ class PlanningWorkflowTests(unittest.TestCase):
         self.assertIn("trip_intake_agent", result.agent_names)
         self.assertIn("verification_agent", result.agent_names)
         self.assertGreaterEqual(len(result.evidence), 1)
+        self.assertEqual(service.agents.adk_workflows.planning_sequence.name, "planning_sequence")
+        self.assertEqual(
+            service.agents.adk_workflows.retrieval_parallel.name,
+            "planning_retrieval_parallel",
+        )
 
     def test_day_rules_override_planner_start_end_places_and_times(self) -> None:
         service = ADKPlanningWorkflowService(
@@ -412,6 +423,32 @@ class PlanningWorkflowTests(unittest.TestCase):
         rewrite_result = rewrite.process_message("Redo the itinerary", itinerary, day_index=0)
         self.assertEqual(rewrite_result["action"], "propose_rewrite")
         self.assertEqual(rewrite_result["proposal"]["proposed_itinerary"].id, itinerary.id)
+
+    def test_chat_booking_request_returns_offer_or_instruction_without_calling(self) -> None:
+        itinerary = _chat_itinerary()
+        service = ChatAgentService()
+        service.booking_service = BookingCallService(
+            maps_client=FakeBookingMapsClient(),  # type: ignore[arg-type]
+        )
+
+        missing = service.process_message(
+            "Book a table",
+            itinerary,
+            day_index=0,
+            target_stop_index=0,
+        )
+        self.assertEqual(missing["action"], "booking_info")
+        self.assertIn("booking_call_offer", missing)
+
+        offer = service.process_message(
+            "Book for 2 tomorrow at 7pm under Ada, callback +15550001111",
+            itinerary,
+            day_index=0,
+            target_stop_index=0,
+        )
+        self.assertIn(offer["action"], {"booking_call_offer", "booking_info"})
+        self.assertEqual(offer["booking_call_offer"].details.reservation_name, "Ada")
+        self.assertEqual(offer["booking_call_offer"].details.venue_phone, "+15551234567")
 
     def test_low_confidence_output_without_supporting_evidence_is_not_persisted_as_recommendation(self) -> None:
         service = ADKPlanningWorkflowService(

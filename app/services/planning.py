@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import time
@@ -8,7 +9,6 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from google import genai
-from google.adk import Agent
 from pydantic import BaseModel, Field
 
 from app.core.settings import get_settings
@@ -25,6 +25,8 @@ from app.domain.models import (
     TravelPreferences,
     TripBrief,
 )
+from app.services.agentic.workflows import WanderlustADKWorkflows, build_wanderlust_adk_workflows
+from app.services.booking_calls import BookingCallService, BookingDetails
 from app.services.guardrails import RecommendationGuardrailService
 from app.services.maps import CandidatePlace, GoogleMapsClient, MapsIntegrationError
 
@@ -113,38 +115,23 @@ class PlanningResult:
 
 class ADKPlanningAgents:
     def __init__(self, model: str) -> None:
-        self.trip_intake = Agent(
-            name="trip_intake_agent",
-            model=model,
-            description="Normalize trip brief and preference constraints.",
-            instruction="Convert travel requirements into structured constraints without inventing facts.",
-        )
-        self.place_discovery = Agent(
-            name="place_discovery_agent",
-            model=model,
-            description="Select candidate places from compliant source evidence.",
-            instruction="Use Google Maps and compliant sources as discovery evidence.",
-        )
-        self.verification = Agent(
-            name="verification_agent",
-            model=model,
-            description="Validate place facts, confidence, and source quality.",
-            instruction="Reject low-confidence social-only recommendations and explain uncertainty.",
-        )
-        self.planner = Agent(
-            name="itinerary_planner_agent",
-            model=model,
-            description="Build day-by-day itinerary plans with explanations.",
-            instruction="Create realistic day plans with mandatory explanation and confidence per stop.",
-        )
+        self.workflows = build_wanderlust_adk_workflows(model)
+        self.trip_intake = self.workflows.trip_intake
+        self.place_discovery = self.workflows.place_discovery
+        self.verification = self.workflows.verification
+        self.planner = self.workflows.planner
 
     @property
-    def all(self) -> list[Agent]:
+    def all(self) -> list[Any]:
         return [self.trip_intake, self.place_discovery, self.verification, self.planner]
 
     @property
     def names(self) -> list[str]:
-        return [agent.name for agent in self.all]
+        return self.workflows.planning_agent_names
+
+    @property
+    def adk_workflows(self) -> WanderlustADKWorkflows:
+        return self.workflows
 
 
 class GeminiPlannerClient:
@@ -662,6 +649,8 @@ class ChatAgentService:
         settings = get_settings()
         self.model = settings.gemini_model
         self._client: genai.Client | None = None
+        self.workflows = build_wanderlust_adk_workflows(settings.gemini_model)
+        self.booking_service = BookingCallService()
 
     def _get_client(self) -> genai.Client:
         if self._client is not None:
@@ -702,6 +691,15 @@ class ChatAgentService:
         day = itinerary.days[day_index]
         constrained_insert_index = _clamp_insert_index(insert_before_index, len(day.stops))
         constrained_target_stop_index = _clamp_stop_index(target_stop_index, len(day.stops))
+        deterministic_booking = _maybe_build_booking_offer(
+            message=message,
+            itinerary=itinerary,
+            day_index=day_index,
+            target_stop_index=constrained_target_stop_index,
+            booking_service=self.booking_service,
+        )
+        if deterministic_booking is not None:
+            return deterministic_booking
         previous_stop = None
         next_stop = None
         if constrained_insert_index is not None:
@@ -725,9 +723,12 @@ class ChatAgentService:
                     "You are a travel assistant for an existing itinerary. "
                     "Classify and answer an in-scope request about this itinerary. "
                     "You may add an activity, update one stop timing, update preferred transport modes, "
-                    "give travel recommendations, or propose a whole-day/whole-itinerary rewrite. "
+                    "give travel recommendations, prepare a booking-call offer, provide booking instructions, "
+                    "or propose a whole-day/whole-itinerary rewrite. "
                     "Whole-day or whole-itinerary rewrites must be action='propose_rewrite', never a direct mutation. "
-                    "Reject booking, payment, calls, delete, export, activate, stop, complete, or unrelated requests."
+                    "Calls and bookings must only become action='booking_call_offer' after the user provides "
+                    "reservation date/time, party size, reservation name, and callback phone. "
+                    "Reject payment, delete, export, activate, stop, complete, or unrelated requests."
                 ),
                 "itinerary_context": {
                     "title": itinerary.title,
@@ -790,10 +791,23 @@ class ChatAgentService:
                         "summary": "string",
                         "proposed_itinerary": "full Itinerary JSON preserving id, user_id, status, brief, preference_version",
                     },
+                    "booking_call_offer": {
+                        "venue_name": "string",
+                        "reservation_datetime": "string",
+                        "party_size": "int",
+                        "reservation_name": "string",
+                        "callback_phone": "string",
+                        "special_requests": "string optional",
+                    },
+                    "booking_fallback": {
+                        "instructions": "string",
+                    },
                 },
                 "guardrails": [
                     "Only accept requests about this itinerary or travel recommendations for this trip.",
-                    "Reject anything unrelated: hotels, flights, off-topic chat, or sensitive lifecycle/commerce actions.",
+                    "Reject anything unrelated: hotels, flights, off-topic chat, or sensitive lifecycle actions.",
+                    "Never claim a booking was made before a confirmed call status says so.",
+                    "Never ask for or handle payment card details.",
                     "Do not generate fake place names — use realistic, well-known places suitable for the region.",
                     "For route-gap insertions, use the requested exact gap when provided.",
                     "For timing edits, update only one stop unless proposing a rewrite.",
@@ -919,6 +933,43 @@ class ChatAgentService:
                 },
                 "error": None,
             }
+        if action == "booking_call_offer":
+            booking = result.get("booking_call_offer", {})
+            details = _booking_details_from_result(booking)
+            if details is None:
+                return _booking_info_response(day, constrained_target_stop_index)
+            stop_idx = constrained_target_stop_index
+            if stop_idx is None:
+                stop_idx = _find_stop_index(day.stops, details.venue_name)
+            if stop_idx is None:
+                return _chat_rejected("Choose a specific itinerary activity before starting a booking call.")
+            offer = self.booking_service.create_offer(
+                itinerary=itinerary,
+                day_index=day_index,
+                stop_index=stop_idx,
+                details=details,
+            )
+            return {
+                "agent_message": result.get(
+                    "agent_message",
+                    "I can help place this booking call after you confirm the details.",
+                ),
+                "action": "booking_call_offer" if offer.can_call else "booking_info",
+                "booking_call_offer": offer,
+                "booking_fallback": {"instructions": offer.fallback_instructions},
+                "error": None,
+            }
+        if action == "booking_info":
+            fallback = result.get("booking_fallback", {})
+            instructions = str(fallback.get("instructions") or "").strip()
+            if not instructions:
+                return _booking_info_response(day, constrained_target_stop_index)
+            return {
+                "agent_message": result.get("agent_message", instructions),
+                "action": "booking_info",
+                "booking_fallback": {"instructions": instructions[:1200]},
+                "error": None,
+            }
 
         return {
             "agent_message": result.get(
@@ -1014,3 +1065,134 @@ def _chat_rejected(message: str) -> dict[str, object]:
         "insert_before_index": None,
         "error": None,
     }
+
+
+def _maybe_build_booking_offer(
+    *,
+    message: str,
+    itinerary: Itinerary,
+    day_index: int,
+    target_stop_index: int | None,
+    booking_service: BookingCallService,
+) -> dict[str, object] | None:
+    if not _looks_like_booking_request(message):
+        return None
+    if target_stop_index is None:
+        return {
+            "agent_message": "Choose the activity you want to book before I prepare a call.",
+            "action": "booking_info",
+            "booking_fallback": {
+                "instructions": "Open Talk to Agent from a specific activity card, then share the date, time, party size, reservation name, and callback phone.",
+            },
+            "error": None,
+        }
+    details = _extract_booking_details(message, itinerary.days[day_index].stops[target_stop_index].name)
+    offer = booking_service.create_offer(
+        itinerary=itinerary,
+        day_index=day_index,
+        stop_index=target_stop_index,
+        details=details,
+    )
+    if details is None or offer.missing_fields:
+        missing = ", ".join(offer.missing_fields)
+        return {
+            "agent_message": (
+                "I can help with that booking. Please send the missing details: "
+                f"{missing}."
+            ),
+            "action": "booking_info",
+            "booking_call_offer": offer,
+            "booking_fallback": {"instructions": offer.fallback_instructions},
+            "error": None,
+        }
+    return {
+        "agent_message": (
+            "I found enough booking details. Confirm if you want the agent to place the call, "
+            "or use the chat instructions instead."
+        ),
+        "action": "booking_call_offer" if offer.can_call else "booking_info",
+        "booking_call_offer": offer,
+        "booking_fallback": {"instructions": offer.fallback_instructions},
+        "error": None,
+    }
+
+
+def _looks_like_booking_request(message: str) -> bool:
+    return bool(re.search(r"\b(book|booking|reserve|reservation|table|call)\b", message, re.I))
+
+
+def _extract_booking_details(message: str, venue_name: str) -> BookingDetails | None:
+    party_match = re.search(r"\b(?:for|party of)\s+(\d{1,2})\b", message, re.I)
+    name_match = re.search(r"\b(?:under|name)\s+([A-Za-z][A-Za-z .'-]{1,80})", message, re.I)
+    phone_match = re.search(r"(\+?\d[\d\s().-]{5,}\d)", message)
+    time_match = re.search(
+        r"((?:today|tomorrow|tonight|on\s+[A-Za-z0-9, ]+)?\s*(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)",
+        message,
+        re.I,
+    )
+    if not (party_match and name_match and phone_match and time_match):
+        return None
+    try:
+        return BookingDetails(
+            venue_name=venue_name,
+            reservation_datetime=time_match.group(1).strip(),
+            party_size=int(party_match.group(1)),
+            reservation_name=name_match.group(1).strip().rstrip("."),
+            callback_phone=phone_match.group(1).strip(),
+            special_requests=_extract_special_requests(message),
+        )
+    except Exception:
+        return None
+
+
+def _extract_special_requests(message: str) -> str | None:
+    match = re.search(r"\b(?:request|requests|note|notes):\s*(.+)$", message, re.I)
+    if not match:
+        return None
+    return match.group(1).strip()[:500]
+
+
+def _booking_details_from_result(raw: object) -> BookingDetails | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return BookingDetails(
+            venue_name=str(raw.get("venue_name") or "Selected venue"),
+            reservation_datetime=str(raw.get("reservation_datetime") or ""),
+            party_size=int(raw.get("party_size") or 0),
+            reservation_name=str(raw.get("reservation_name") or ""),
+            callback_phone=str(raw.get("callback_phone") or ""),
+            special_requests=raw.get("special_requests"),
+        )
+    except Exception:
+        return None
+
+
+def _booking_info_response(day: DayPlan, target_stop_index: int | None) -> dict[str, object]:
+    venue = (
+        day.stops[target_stop_index].name
+        if target_stop_index is not None and target_stop_index < len(day.stops)
+        else "the venue"
+    )
+    return {
+        "agent_message": (
+            f"I can help prepare a booking request for {venue}. Send the date/time, party size, "
+            "reservation name, callback phone, and any special requests."
+        ),
+        "action": "booking_info",
+        "booking_fallback": {
+            "instructions": (
+                f"To book {venue}, contact the venue directly with your preferred date/time, "
+                "party size, reservation name, callback number, and special requests."
+            )
+        },
+        "error": None,
+    }
+
+
+def _find_stop_index(stops: list[PlaceStop], name: str) -> int | None:
+    needle = name.lower().strip()
+    for index, stop in enumerate(stops):
+        if stop.name.lower().strip() == needle:
+            return index
+    return None

@@ -1,11 +1,13 @@
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
+from fastapi.responses import Response
 
 from app.api.dependencies import (
     RepositoryBundle,
     get_active_event_service,
+    get_booking_service,
     get_current_user,
     get_planning_service,
     get_repositories,
@@ -13,6 +15,8 @@ from app.api.dependencies import (
 from app.api.schemas import (
     ChatRequest,
     ChatResponse,
+    BookingCallCreateRequest,
+    BookingCallStatusResponse,
     DeleteResponse,
     ExportRequestResponse,
     ItineraryCreateRequest,
@@ -40,6 +44,7 @@ from app.domain.models import (
 )
 from app.services.active_events import ActiveEventRepositoryBundle, ActiveEventWorkflowService
 from app.services.auth import VerifiedUser
+from app.services.booking_calls import BookingCallService, get_booking_call_service
 from app.services.guardrails import (
     ActionGuardrailService,
     ItineraryLifecycleService,
@@ -374,11 +379,104 @@ def chat_with_itinerary_agent(
             proposal=result.get("proposal"),
         )
 
+    if action in {"booking_call_offer", "booking_info", "booking_rejected"}:
+        return ChatResponse(
+            agent_message=agent_message
+            or "I can help with booking details, but I need explicit confirmation before any call.",
+            action=action,
+            booking_call_offer=result.get("booking_call_offer"),
+            booking_fallback=result.get("booking_fallback"),
+        )
+
     return ChatResponse(
         agent_message=agent_message
         or "I can only help with adding activities to this itinerary.",
         action=action or "rejected",
     )
+
+
+@router.post(
+    "/itineraries/{itinerary_id}/booking-calls",
+    response_model=BookingCallStatusResponse,
+)
+def start_booking_call(
+    itinerary_id: str,
+    request: BookingCallCreateRequest,
+    current_user: VerifiedUser = Depends(get_current_user),
+    repositories: RepositoryBundle = Depends(get_repositories),
+    booking_service: BookingCallService = Depends(get_booking_service),
+) -> BookingCallStatusResponse:
+    logger.info(
+        "start_booking_call user=%s itinerary_id=%s day=%s stop=%s",
+        current_user.uid,
+        itinerary_id,
+        request.day_index,
+        request.stop_index,
+    )
+    itinerary = _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
+    try:
+        record = booking_service.start_call(
+            user_id=current_user.uid,
+            itinerary=itinerary,
+            day_index=request.day_index,
+            stop_index=request.stop_index,
+            details=request.details,
+            confirmed=request.confirmed,
+        )
+    except Exception as exc:
+        logger.warning("start_booking_call rejected itinerary_id=%s: %s", itinerary_id, exc)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    _audit(repositories, current_user.uid, "booking_call.start", "itinerary", itinerary.id)
+    return BookingCallStatusResponse(call=record)
+
+
+@router.get("/booking-calls/{call_id}", response_model=BookingCallStatusResponse)
+def get_booking_call_status(
+    call_id: str,
+    current_user: VerifiedUser = Depends(get_current_user),
+    booking_service: BookingCallService = Depends(get_booking_service),
+) -> BookingCallStatusResponse:
+    record = booking_service.get_status(call_id, current_user.uid)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking call not found.")
+    return BookingCallStatusResponse(call=record)
+
+
+@router.post("/booking-calls/twilio-status", include_in_schema=False)
+async def twilio_booking_status_callback(
+    request: Request,
+    booking_service: BookingCallService = Depends(get_booking_service),
+) -> dict[str, str]:
+    try:
+        form = await request.form()
+        CallSid = str(form.get("CallSid") or "")
+        CallStatus = str(form.get("CallStatus") or "")
+    except Exception:
+        CallSid = ""
+        CallStatus = ""
+    if CallSid and CallStatus:
+        booking_service.update_twilio_status(call_sid=CallSid, status=CallStatus)
+    return {"status": "ok"}
+
+
+@router.get("/booking-calls/twiml/{stream_token}", include_in_schema=False)
+@router.post("/booking-calls/twiml/{stream_token}", include_in_schema=False)
+def booking_twiml(
+    stream_token: str,
+    booking_service: BookingCallService = Depends(get_booking_service),
+) -> Response:
+    return Response(
+        content=booking_service.twiml_for_token(stream_token),
+        media_type="application/xml",
+    )
+
+
+@router.websocket("/booking-calls/stream/{stream_token}")
+async def booking_call_stream(
+    websocket: WebSocket,
+    stream_token: str,
+) -> None:
+    await get_booking_call_service().bridge_stream(websocket, stream_token)
 
 
 def _parse_duration(duration_str: str) -> int:

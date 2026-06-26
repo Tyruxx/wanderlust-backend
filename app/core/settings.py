@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     google_geocoding_api_key: str = ""
     google_weather_api_key: str = ""
 
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+    public_backend_base_url: str = ""
+    gemini_live_model: str = "gemini-3.1-flash-live-preview"
+    booking_call_max_seconds: int = 300
+
     log_level: str = "INFO"
     request_timeout_seconds: int = 30
     agent_timeout_seconds: int = 60

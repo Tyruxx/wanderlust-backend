@@ -4,6 +4,7 @@ from fastapi import Header, HTTPException, status
 
 from app.services.active_events import ActiveEventWorkflowService, get_active_event_workflow_service
 from app.services.auth import VerifiedUser
+from app.services.booking_calls import BookingCallService, get_booking_call_service
 from app.services.repositories import (
     AuditLogRepository,
     DynamicPreferencesRepository,
@@ -56,3 +57,7 @@ def get_planning_service() -> ADKPlanningWorkflowService:
 
 def get_active_event_service() -> ActiveEventWorkflowService:
     return get_active_event_workflow_service()
+
+
+def get_booking_service() -> BookingCallService:
+    return get_booking_call_service()

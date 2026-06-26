@@ -22,6 +22,8 @@ class CandidatePlace(BaseModel):
     rating: float | None = None
     website_uri: str | None = None
     google_maps_uri: str | None = None
+    national_phone_number: str | None = None
+    international_phone_number: str | None = None
     latitude: float | None = None
     longitude: float | None = None
 
@@ -50,6 +52,7 @@ class PlacesAutocompleteSuggestion:
 
 class GoogleMapsClient:
     PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+    PLACES_DETAILS_URL = "https://places.googleapis.com/v1/places"
     PLACES_AUTOCOMPLETE_URL = "https://maps.googleapis.com/maps/api/place/autocomplete/json"
     ROUTES_COMPUTE_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
     GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -87,6 +90,8 @@ class GoogleMapsClient:
                         "places.rating",
                         "places.websiteUri",
                         "places.googleMapsUri",
+                        "places.nationalPhoneNumber",
+                        "places.internationalPhoneNumber",
                         "places.location",
                     ]
                 ),
@@ -151,6 +156,13 @@ class GoogleMapsClient:
             description = prediction.get("description", "")
             suggestions.append(PlacesAutocompleteSuggestion(place_id=place_id, description=description))
         return suggestions[:max_results]
+
+    def find_phone_number(self, query: str, *, region: str = "") -> str | None:
+        candidates = self.text_search(query, region=region, max_result_count=1)
+        if not candidates:
+            return None
+        candidate = candidates[0]
+        return candidate.international_phone_number or candidate.national_phone_number
 
     _ROUTES_MODE_MAP = {
         "WALKING": "WALK",
@@ -217,6 +229,8 @@ def _candidate_from_place(place: dict[str, Any]) -> CandidatePlace:
         rating=place.get("rating"),
         website_uri=place.get("websiteUri"),
         google_maps_uri=place.get("googleMapsUri"),
+        national_phone_number=place.get("nationalPhoneNumber"),
+        international_phone_number=place.get("internationalPhoneNumber"),
         latitude=location.get("latitude"),
         longitude=location.get("longitude"),
     )

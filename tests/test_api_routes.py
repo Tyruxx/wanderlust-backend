@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from app.api.dependencies import (
     RepositoryBundle,
     get_active_event_service,
+    get_booking_service,
     get_current_user,
     get_repositories,
 )
@@ -30,6 +31,7 @@ from app.domain.models import (
 from app.main import app
 from app.services.active_events import ActiveEventWorkflowService
 from app.services.auth import VerifiedUser
+from app.services.booking_calls import BookingCallService
 from app.services.repositories import AuditLogEntry
 from app.services.planning import PlanningResult
 
@@ -117,6 +119,9 @@ class ApiRouteTests(unittest.TestCase):
         app.dependency_overrides[get_active_event_service] = lambda: ActiveEventWorkflowService(
             publisher=FakePublisher()
         )
+        app.dependency_overrides[get_booking_service] = lambda: BookingCallService(
+            maps_client=FakeBookingMapsClient()  # type: ignore[arg-type]
+        )
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
@@ -198,6 +203,43 @@ class ApiRouteTests(unittest.TestCase):
             stored_after_proposal.days[0].stops[0].time_window if stored_after_proposal else None,
             "11:30 AM",
         )
+
+    def test_booking_call_requires_confirmation_and_falls_back_when_unconfigured(self) -> None:
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(user_id="user-1", version=2, onboarding_required=False),
+        )
+        itinerary = self.client.post("/v1/itineraries", json=chat_itinerary_payload()).json()
+        payload = {
+            "day_index": 0,
+            "stop_index": 0,
+            "confirmed": False,
+            "details": {
+                "venue_name": "Colosseum",
+                "venue_phone": "+15551234567",
+                "reservation_datetime": "tomorrow at 7pm",
+                "party_size": 2,
+                "reservation_name": "Ada",
+                "callback_phone": "+15550001111",
+            },
+        }
+
+        rejected = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/booking-calls",
+            json=payload,
+        )
+        self.assertEqual(rejected.status_code, 400)
+
+        payload["confirmed"] = True
+        response = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/booking-calls",
+            json=payload,
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()["call"]
+        self.assertEqual(body["status"], "fallback_required")
+        self.assertIsNone(body["details"])
+        self.assertIn("Colosseum", body["fallback_instructions"])
 
     def test_start_requires_replacement_confirmation_then_switches_active_itinerary(self) -> None:
         self.preferences.create(
@@ -374,6 +416,11 @@ def location_event_payload(deviation_detected: bool = False) -> dict[str, object
 class FakePublisher:
     def publish(self, event) -> str:
         return "fake-message-id"
+
+
+class FakeBookingMapsClient:
+    def find_phone_number(self, query: str, *, region: str = "") -> str | None:
+        return "+15551234567"
 
 
 class FakeTimingChatAgent:

@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from app.services.booking_calls import BookingCallOffer, BookingCallRecord, BookingDetails
 from app.domain.models import (
     GeoPoint,
     BudgetPosture,
@@ -164,6 +165,19 @@ class ChatResponse(BaseModel):
     updated_itinerary: Itinerary | None = None
     recommendations: list[ChatRecommendationSchema] = Field(default_factory=list)
     proposal: ChatProposalSchema | None = None
+    booking_call_offer: BookingCallOffer | None = None
+    booking_fallback: dict[str, str] | None = None
+
+
+class BookingCallCreateRequest(BaseModel):
+    day_index: int = Field(ge=0)
+    stop_index: int = Field(ge=0)
+    details: BookingDetails
+    confirmed: bool = False
+
+
+class BookingCallStatusResponse(BaseModel):
+    call: BookingCallRecord
 
 
 class RecoveryDecisionResponse(BaseModel):
