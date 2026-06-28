@@ -32,6 +32,25 @@ Fill `.env` with your Gemini API key and/or Maps API key before making real serv
   `GEMINI_LIVE_MODEL`. `PUBLIC_BACKEND_BASE_URL` must be reachable by Twilio
   over HTTPS/WSS for live calls.
 
+## Twilio Booking Call E2E Test
+
+The Twilio e2e test places a real outbound call and may incur Twilio charges.
+Run it only with an explicit opt-in and a safe test destination number:
+
+```sh
+WANDERLUST_RUN_TWILIO_E2E=1 \
+WANDERLUST_TWILIO_E2E_TO_NUMBER=+15551234567 \
+.venv/bin/python -m pytest tests/test_twilio_e2e.py
+```
+
+The test reads the app's Twilio configuration from `.env`, verifies the public
+backend URL responds on `/readyz` and the booking TwiML endpoint, starts a
+confirmed booking call through `BookingCallService`, checks Twilio returns a
+queued call SID, then hangs up the call. On Twilio trial accounts, the test
+destination number must be verified in Twilio. The opt-in flag must be set in
+the shell for that command so normal `pytest` runs cannot accidentally place a
+call just because `.env` exists.
+
 ## Guardrails
 
 - Never run active location, ambient agents, or suggestions for INACTIVE or COMPLETED itineraries.
