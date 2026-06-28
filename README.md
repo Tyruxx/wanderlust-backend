@@ -8,7 +8,8 @@ Google Search grounding, and Google Maps Platform).
 Backend runtime state is local SQLite only — no Firestore, no Pub/Sub, no
 Secret Manager. Flutter remains the local-first source of truth for traveler
 preferences and saved itineraries; backend requests use an `X-User-Id` device
-context header rather than an end-user identity provider.
+context header rather than an end-user identity provider. In the Flutter app
+this is an anonymous `anon_...` device ID generated once and stored locally.
 
 ## Local Setup
 
@@ -50,6 +51,94 @@ queued call SID, then hangs up the call. On Twilio trial accounts, the test
 destination number must be verified in Twilio. The opt-in flag must be set in
 the shell for that command so normal `pytest` runs cannot accidentally place a
 call just because `.env` exists.
+
+## Google Cloud Run Deployment
+
+Cloud Run is required for the agent-assisted booking call feature because
+Twilio must reach public HTTPS and WSS endpoints. The mobile app can stay
+anonymous and local-first: it sends the local `anon_...` device ID as
+`X-User-Id`, while Cloud Run routes booking-call state by that anonymous key.
+
+### 1. Create Secret Manager Values
+
+The deployment expects these Secret Manager secret names:
+
+```sh
+printf '%s' "$GOOGLE_API_KEY" | gcloud secrets create google-api-key --data-file=-
+printf '%s' "$GOOGLE_MAPS_BACKEND_API_KEY" | gcloud secrets create google-maps-backend-api-key --data-file=-
+printf '%s' "$TWILIO_ACCOUNT_SID" | gcloud secrets create twilio-account-sid --data-file=-
+printf '%s' "$TWILIO_AUTH_TOKEN" | gcloud secrets create twilio-auth-token --data-file=-
+printf '%s' "$TWILIO_FROM_NUMBER" | gcloud secrets create twilio-from-number --data-file=-
+```
+
+If a secret already exists, add a new version instead:
+
+```sh
+printf '%s' "$TWILIO_AUTH_TOKEN" | gcloud secrets versions add twilio-auth-token --data-file=-
+```
+
+### 2. Deploy With Script
+
+```sh
+cd backend
+GOOGLE_CLOUD_PROJECT=your-project-id \
+GOOGLE_CLOUD_REGION=asia-southeast1 \
+./scripts/deploy_cloud_run.sh
+```
+
+The script enables required APIs, creates Artifact Registry and a runtime
+service account when needed, builds the Docker image, deploys Cloud Run, then
+sets `PUBLIC_BACKEND_BASE_URL` to the generated Cloud Run URL when you have not
+provided a custom domain. The current booking-call bridge keeps live call
+session state in process memory, so the deployment pins Cloud Run to one warm
+instance. Add external session storage before increasing max instances.
+
+### 3. Deploy With Terraform
+
+```sh
+cd backend
+export GOOGLE_CLOUD_PROJECT=your-project-id
+export GOOGLE_CLOUD_REGION=asia-southeast1
+export IMAGE="$GOOGLE_CLOUD_REGION-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/wanderlust/wanderlust-backend:$(git rev-parse --short HEAD)"
+
+gcloud builds submit --project "$GOOGLE_CLOUD_PROJECT" --tag "$IMAGE" .
+
+cd infra/cloud-run
+terraform init
+terraform apply \
+  -var="project_id=$GOOGLE_CLOUD_PROJECT" \
+  -var="region=$GOOGLE_CLOUD_REGION" \
+  -var="image=$IMAGE"
+```
+
+Terraform outputs `service_url`. Use that URL as Flutter's `BACKEND_BASE_URL`.
+If you are not using a custom domain, run a second `terraform apply` with:
+
+```sh
+terraform apply \
+  -var="project_id=$GOOGLE_CLOUD_PROJECT" \
+  -var="region=$GOOGLE_CLOUD_REGION" \
+  -var="image=$IMAGE" \
+  -var="public_backend_base_url=$(terraform output -raw service_url)"
+```
+
+### 4. Build/Run Flutter Against Cloud Run
+
+```sh
+flutter run \
+  --dart-define=BACKEND_BASE_URL=https://YOUR_CLOUD_RUN_URL \
+  --dart-define=GOOGLE_MAPS_IOS_API_KEY=YOUR_IOS_MAPS_KEY
+```
+
+### 5. Verify Twilio E2E
+
+Use a Twilio-verified destination number for trial accounts:
+
+```sh
+WANDERLUST_RUN_TWILIO_E2E=1 \
+WANDERLUST_TWILIO_E2E_TO_NUMBER=+15551234567 \
+.venv/bin/python -m pytest tests/test_twilio_e2e.py
+```
 
 ## Guardrails
 
