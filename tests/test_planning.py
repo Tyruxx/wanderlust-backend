@@ -277,6 +277,7 @@ class PlanningWorkflowTests(unittest.TestCase):
             region="Rome",
             description="Photography-focused ruins and quiet wine bars.",
             trip_length_days=1,
+            preferred_transport_modes=["DRIVING"],
             day_rules=[
                 DayRule(
                     start_day=1,
@@ -301,6 +302,9 @@ class PlanningWorkflowTests(unittest.TestCase):
         self.assertIn("Photography-focused ruins", prompt)
         self.assertIn("mandatory_day_rules", prompt)
         self.assertIn("Hotel Artemide", prompt)
+        self.assertIn("Activity time_window values must account for travel time", prompt)
+        self.assertIn("travel_time_assumption_minutes", prompt)
+        self.assertIn("DRIVING", prompt)
 
     def test_chat_gap_insert_overrides_model_chosen_index(self) -> None:
         service = ChatAgentService()
