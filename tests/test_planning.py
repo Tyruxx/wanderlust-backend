@@ -474,6 +474,63 @@ class PlanningWorkflowTests(unittest.TestCase):
         self.assertEqual(offer.details.callback_phone, "+6512345678")
         self.assertEqual(offer.details.venue_phone, "+6580241976")
 
+    def test_chat_booking_request_accepts_explicit_hotline_override(self) -> None:
+        itinerary = _chat_itinerary()
+        service = ChatAgentService()
+        service.booking_service = BookingCallService(
+            maps_client=FakeBookingMapsClient(),  # type: ignore[arg-type]
+        )
+
+        result = service.process_message(
+            "Book for 3 tomorrow at 8pm under Casey, callback phone +15550001111. "
+            "Use this hotline instead +15559998888.",
+            itinerary,
+            day_index=0,
+            target_stop_index=0,
+        )
+
+        offer = result["booking_call_offer"]
+        self.assertEqual(offer.details.callback_phone, "+15550001111")
+        self.assertEqual(offer.details.venue_phone, "+15559998888")
+
+    def test_chat_booking_request_does_not_confuse_callback_with_venue_phone(self) -> None:
+        itinerary = _chat_itinerary()
+        service = ChatAgentService()
+        service.booking_service = BookingCallService(
+            maps_client=FakeBookingMapsClient(),  # type: ignore[arg-type]
+        )
+
+        result = service.process_message(
+            "Book for 2 tomorrow at 7pm under Ada, callback phone +15550001111. "
+            "My backup number is +15559998888.",
+            itinerary,
+            day_index=0,
+            target_stop_index=0,
+        )
+
+        offer = result["booking_call_offer"]
+        self.assertEqual(offer.details.callback_phone, "+15550001111")
+        self.assertEqual(offer.details.venue_phone, "+15551234567")
+
+    def test_chat_booking_request_falls_back_when_hotline_text_is_invalid(self) -> None:
+        itinerary = _chat_itinerary()
+        service = ChatAgentService()
+        service.booking_service = BookingCallService(
+            maps_client=FakeBookingMapsClient(),  # type: ignore[arg-type]
+        )
+
+        result = service.process_message(
+            "Book for 2 tomorrow at 7pm under Ada, callback phone +15550001111, "
+            "hotline: main desk only.",
+            itinerary,
+            day_index=0,
+            target_stop_index=0,
+        )
+
+        offer = result["booking_call_offer"]
+        self.assertEqual(offer.details.callback_phone, "+15550001111")
+        self.assertEqual(offer.details.venue_phone, "+15551234567")
+
     def test_chat_booking_request_asks_one_friendly_missing_question(self) -> None:
         itinerary = _chat_itinerary()
         service = ChatAgentService()
@@ -490,7 +547,9 @@ class PlanningWorkflowTests(unittest.TestCase):
         self.assertIn("When should I try to book it for?", result["agent_message"])
         self.assertNotIn("reservation_datetime", result["agent_message"])
 
-    def test_low_confidence_output_without_supporting_evidence_is_not_persisted_as_recommendation(self) -> None:
+    def test_low_confidence_output_without_supporting_evidence_is_not_persisted_as_recommendation(
+        self,
+    ) -> None:
         service = ADKPlanningWorkflowService(
             maps_client=FakeMapsClient(),  # type: ignore[arg-type]
             planner_client=SocialOnlyLowConfidencePlannerClient(),
@@ -504,6 +563,7 @@ class PlanningWorkflowTests(unittest.TestCase):
 
         self.assertEqual(len(result.recommendations), 1)
         self.assertEqual(result.recommendations[0].confidence, SourceConfidence.LOW)
+
 
 def _chat_itinerary() -> Itinerary:
     return Itinerary(

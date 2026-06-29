@@ -45,11 +45,22 @@ class BookingDetails(BaseModel):
     @field_validator("callback_phone")
     @classmethod
     def callback_phone_is_reasonable(cls, value: str) -> str:
-        cleaned = value.strip()
-        digits = [char for char in cleaned if char.isdigit()]
-        if len(digits) < 5:
-            raise ValueError("callback_phone must include a reachable phone number")
-        return cleaned
+        return _validate_reachable_phone(value, field_name="callback_phone")
+
+    @field_validator("venue_phone")
+    @classmethod
+    def venue_phone_is_reasonable(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return _validate_reachable_phone(value, field_name="venue_phone")
+
+
+def _validate_reachable_phone(value: str, *, field_name: str) -> str:
+    cleaned = value.strip()
+    digits = [char for char in cleaned if char.isdigit()]
+    if len(digits) < 5:
+        raise ValueError(f"{field_name} must include a reachable phone number")
+    return cleaned
 
 
 class BookingCallOffer(BaseModel):
@@ -300,9 +311,13 @@ class BookingCallService:
                 "The booking call ended. Review venue confirmation details in the chat."
             )
         except Exception as exc:
-            logger.warning("booking media bridge failed call_id=%s: %s", context.record.call_id, exc)
+            logger.warning(
+                "booking media bridge failed call_id=%s: %s", context.record.call_id, exc
+            )
             context.record.status = BookingCallStatus.FALLBACK_REQUIRED
-            context.record.result_summary = "The live call bridge failed. Use the chat instructions."
+            context.record.result_summary = (
+                "The live call bridge failed. Use the chat instructions."
+            )
         finally:
             context.record.updated_at = _utc_now()
             self._records[context.record.call_id] = _scrub_record(context.record)

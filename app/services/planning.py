@@ -44,8 +44,7 @@ class PlannerClient(Protocol):
         candidates: list[CandidatePlace],
         search_candidates: list["GroundedSearchCandidate"],
         weather: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 class GroundedCitation(BaseModel):
@@ -379,7 +378,9 @@ class ADKPlanningWorkflowService:
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
                 executor.submit(self._discover_candidates, brief, preferences): "maps",
-                executor.submit(self._discover_grounded_search_candidates, brief, preferences): "search",
+                executor.submit(
+                    self._discover_grounded_search_candidates, brief, preferences
+                ): "search",
                 executor.submit(self._load_weather_context, brief): "weather",
             }
             candidates: list[CandidatePlace] = []
@@ -416,7 +417,9 @@ class ADKPlanningWorkflowService:
             except MapsIntegrationError:
                 raise
             except Exception as exc:
-                raise PlanningWorkflowError(f"Maps place discovery failed for query: {query}") from exc
+                raise PlanningWorkflowError(
+                    f"Maps place discovery failed for query: {query}"
+                ) from exc
         deduped: dict[str, CandidatePlace] = {}
         for candidate in candidates:
             key = candidate.place_id or f"{candidate.name}:{candidate.formatted_address}"
@@ -463,7 +466,9 @@ class ADKPlanningWorkflowService:
                     candidates.extend(future.result())
                 except Exception:
                     continue
-        return _rank_search_candidates(_dedupe_search_candidates(candidates), brief, preferences)[:16]
+        return _rank_search_candidates(_dedupe_search_candidates(candidates), brief, preferences)[
+            :16
+        ]
 
 
 def get_planning_workflow_service() -> ADKPlanningWorkflowService:
@@ -471,7 +476,9 @@ def get_planning_workflow_service() -> ADKPlanningWorkflowService:
 
 
 def _candidate_queries(brief: TripBrief, preferences: TravelPreferences) -> list[str]:
-    interests = brief.style_interests or preferences.interests or ["food", "attractions", "local culture"]
+    interests = (
+        brief.style_interests or preferences.interests or ["food", "attractions", "local culture"]
+    )
     return list(dict.fromkeys([*interests, *brief.must_visit_places]))[:5]
 
 
@@ -522,7 +529,9 @@ def _rank_search_candidates(
     brief: TripBrief,
     preferences: TravelPreferences,
 ) -> list[GroundedSearchCandidate]:
-    interest_text = " ".join([brief.description, *brief.style_interests, *preferences.interests]).lower()
+    interest_text = " ".join(
+        [brief.description, *brief.style_interests, *preferences.interests]
+    ).lower()
 
     def score(candidate: GroundedSearchCandidate) -> tuple[int, int, int]:
         text = f"{candidate.name} {candidate.category} {candidate.match_reason}".lower()
@@ -587,19 +596,22 @@ def _planner_prompt(
                 "Prefer candidates corroborated by Maps plus Google Search or by official/current citations.",
             ],
             "trip_description_priority": (
-                "Plan stops, pacing, and explanations around this request: "
-                f"{brief.description}"
+                f"Plan stops, pacing, and explanations around this request: {brief.description}"
             ),
             "mandatory_day_rules": [rule.model_dump(mode="json") for rule in brief.day_rules],
             "radius_km_guide": (
                 f"Activities should preferably be within {brief.radius_km} km of {brief.region}. "
                 "This is a flexible guide, not a hard constraint."
-            ) if brief.radius_km else None,
+            )
+            if brief.radius_km
+            else None,
             "preferred_transport_modes": brief.preferred_transport_modes or [],
             "transport_mode_guide": (
                 f"The user prefers these transport modes: {brief.preferred_transport_modes}. "
                 "When ordering stops consider realistic travel times using these modes."
-            ) if brief.preferred_transport_modes else None,
+            )
+            if brief.preferred_transport_modes
+            else None,
             "brief": brief.model_dump(mode="json"),
             "preferences": preferences.model_dump(mode="json"),
             "candidate_places": [candidate.model_dump(mode="json") for candidate in candidates],
@@ -627,6 +639,7 @@ def _parse_json_response(text: str) -> dict[str, Any]:
 def sanitize_agent_message(text: str, max_length: int = 2000) -> str:
     """Strip content that could leak system context, prompts, or be harmful."""
     import re
+
     if not text:
         return ""
     text = text.strip()
@@ -864,7 +877,9 @@ class ChatAgentService:
                 travel_time_assumption_minutes=stop_data.get("travel_time_assumption_minutes"),
             )
             return {
-                "agent_message": result.get("agent_message", f"Added {new_stop.name} to day {day_index + 1}."),
+                "agent_message": result.get(
+                    "agent_message", f"Added {new_stop.name} to day {day_index + 1}."
+                ),
                 "action": "insert_stop",
                 "new_stop": new_stop,
                 "insert_before_index": insert_idx,
@@ -890,9 +905,13 @@ class ChatAgentService:
             transport = result.get("transport_update", {})
             modes = _allowed_transport_modes(transport.get("preferred_transport_modes", []))
             if not modes:
-                return _chat_rejected("I can only switch to walking, driving, transit, or bicycling.")
+                return _chat_rejected(
+                    "I can only switch to walking, driving, transit, or bicycling."
+                )
             return {
-                "agent_message": result.get("agent_message", "Updated the preferred transport modes."),
+                "agent_message": result.get(
+                    "agent_message", "Updated the preferred transport modes."
+                ),
                 "action": "update_transport_mode",
                 "transport_update": {"preferred_transport_modes": modes},
                 "error": None,
@@ -928,7 +947,9 @@ class ChatAgentService:
                 "action": "propose_rewrite",
                 "proposal": {
                     "title": str(proposal.get("title") or "Itinerary rewrite"),
-                    "summary": str(proposal.get("summary") or "Review the proposed itinerary changes."),
+                    "summary": str(
+                        proposal.get("summary") or "Review the proposed itinerary changes."
+                    ),
                     "proposed_itinerary": proposed_itinerary,
                 },
                 "error": None,
@@ -942,7 +963,9 @@ class ChatAgentService:
             if stop_idx is None:
                 stop_idx = _find_stop_index(day.stops, details.venue_name)
             if stop_idx is None:
-                return _chat_rejected("Choose a specific itinerary activity before starting a booking call.")
+                return _chat_rejected(
+                    "Choose a specific itinerary activity before starting a booking call."
+                )
             offer = self.booking_service.create_offer(
                 itinerary=itinerary,
                 day_index=day_index,
@@ -1086,7 +1109,9 @@ def _maybe_build_booking_offer(
             },
             "error": None,
         }
-    details = _extract_booking_details(message, itinerary.days[day_index].stops[target_stop_index].name)
+    details = _extract_booking_details(
+        message, itinerary.days[day_index].stops[target_stop_index].name
+    )
     offer = booking_service.create_offer(
         itinerary=itinerary,
         day_index=day_index,
@@ -1159,7 +1184,7 @@ def _friendly_missing_booking_prompt(missing_fields: list[str], venue_name: str)
 def _extract_labeled_value(message: str, labels: tuple[str, ...]) -> str | None:
     label_pattern = "|".join(re.escape(label) for label in labels)
     match = re.search(
-        rf"(?:^|[,\n.;])\s*(?:{label_pattern})\s*(?:is|=|:|-)?\s*(.+?)(?=(?:[,\n.;]\s*(?:date/time|date time|datetime|reservation time|time|party size|party|pax|people|reservation name|name|under|callback phone|callback number|phone|venue phone|restaurant phone|special request|special requests|notes?)\b)|[.;]\s|$)",
+        rf"(?:^|[,\n.;])\s*(?:{label_pattern})\s*(?:is|=|:|-)?\s*(.+?)(?=(?:[,\n.;]\s*(?:date/time|date time|datetime|reservation time|time|party size|party|pax|people|reservation name|name|under|callback phone|callback number|phone|venue phone|restaurant phone|restaurant phone number|venue number|hotline|call target|number to call|special request|special requests|notes?)\b)|[.;]\s|$)",
         message,
         re.I,
     )
@@ -1171,7 +1196,15 @@ def _extract_labeled_value(message: str, labels: tuple[str, ...]) -> str | None:
 def _extract_booking_datetime(message: str) -> str | None:
     labeled = _extract_labeled_value(
         message,
-        ("date/time", "date time", "datetime", "reservation datetime", "reservation time", "booking time", "time"),
+        (
+            "date/time",
+            "date time",
+            "datetime",
+            "reservation datetime",
+            "reservation time",
+            "booking time",
+            "time",
+        ),
     )
     if labeled:
         return labeled[:120]
@@ -1209,7 +1242,9 @@ def _extract_first_phone(text: str) -> str | None:
 
 
 def _extract_callback_phone(message: str) -> str | None:
-    labeled = _extract_labeled_value(message, ("callback phone", "callback number", "contact phone", "my phone"))
+    labeled = _extract_labeled_value(
+        message, ("callback phone", "callback number", "contact phone", "my phone")
+    )
     if labeled:
         phone = _extract_first_phone(labeled)
         if phone:
@@ -1218,7 +1253,18 @@ def _extract_callback_phone(message: str) -> str | None:
 
 
 def _extract_venue_phone_override(message: str, callback_phone: str) -> str | None:
-    labeled = _extract_labeled_value(message, ("venue phone", "restaurant phone", "restaurant phone number", "venue number"))
+    labeled = _extract_labeled_value(
+        message,
+        (
+            "venue phone",
+            "restaurant phone",
+            "restaurant phone number",
+            "venue number",
+            "hotline",
+            "call target",
+            "number to call",
+        ),
+    )
     candidates: list[str] = []
     if labeled:
         phone = _extract_first_phone(labeled)
@@ -1227,10 +1273,14 @@ def _extract_venue_phone_override(message: str, callback_phone: str) -> str | No
     for pattern in (
         r"(?:restaurant|venue)[^.\n]{0,80}?(?:changed|updated|new)[^+\d]{0,40}(\+?\d[\d\s().-]{5,}\d)",
         r"(?:changed|updated)[^.\n]{0,80}?(?:restaurant|venue)[^+\d]{0,40}(\+?\d[\d\s().-]{5,}\d)",
-        r"(?:call|use)\s+(?:this\s+)?(?:restaurant\s+|venue\s+)?number\s+instead[^+\d]{0,40}(\+?\d[\d\s().-]{5,}\d)",
-        r"(\+?\d[\d\s().-]{5,}\d)\D*(?:instead|venue|restaurant)",
+        r"(?:call|use)\s+(?:this\s+)?(?:restaurant\s+|venue\s+|hotline\s+)?number\s+instead[^+\d]{0,40}(\+?\d[\d\s().-]{5,}\d)",
+        r"(?:call|use)\s+(?:this\s+)?hotline(?:\s+instead)?[^+\d]{0,40}(\+?\d[\d\s().-]{5,}\d)",
+        r"(?:their\s+)?new\s+(?:number|hotline)[^+\d]{0,40}(\+?\d[\d\s().-]{5,}\d)",
+        r"(\+?\d[\d\s().-]{5,}\d)\D*(?:instead|venue|restaurant|hotline|call target)",
     ):
-        candidates.extend(match.strip().strip(".,;") for match in re.findall(pattern, message, re.I))
+        candidates.extend(
+            match.strip().strip(".,;") for match in re.findall(pattern, message, re.I)
+        )
     for candidate in candidates:
         if candidate != callback_phone:
             return candidate
@@ -1250,6 +1300,7 @@ def _booking_details_from_result(raw: object) -> BookingDetails | None:
     try:
         return BookingDetails(
             venue_name=str(raw.get("venue_name") or "Selected venue"),
+            venue_phone=raw.get("venue_phone"),
             reservation_datetime=str(raw.get("reservation_datetime") or ""),
             party_size=int(raw.get("party_size") or 0),
             reservation_name=str(raw.get("reservation_name") or ""),
