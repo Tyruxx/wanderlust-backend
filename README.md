@@ -47,7 +47,12 @@ WANDERLUST_TWILIO_E2E_TO_NUMBER=+15551234567 \
 The test reads the app's Twilio configuration from `.env`, verifies the public
 backend URL responds on `/readyz` and the booking TwiML endpoint, starts a
 confirmed booking call through `BookingCallService`, checks Twilio returns a
-queued call SID, then hangs up the call. On Twilio trial accounts, the test
+queued call SID, simulates the venue pressing `2` to confirm the request was
+received, then hangs up the call. In production calls, Gemini Live delivers the
+booking request first, then Twilio asks the venue to press `1` to repeat the
+booking details or `2` to mark the request as received. Calls that end before
+`2` is pressed resolve as failed so the user is not told a booking was received
+without venue confirmation. On Twilio trial accounts, the test
 destination number must be verified in Twilio. The opt-in flag must be set in
 the shell for that command so normal `pytest` runs cannot accidentally place a
 call just because `.env` exists.

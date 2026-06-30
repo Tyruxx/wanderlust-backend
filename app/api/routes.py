@@ -52,7 +52,11 @@ from app.services.guardrails import (
 )
 from app.services.repositories import AuditLogEntry
 from app.services.maps import Coordinates, GoogleMapsClient, MapsIntegrationError
-from app.services.planning import ADKPlanningWorkflowService, PlanningWorkflowError, sanitize_agent_message
+from app.services.planning import (
+    ADKPlanningWorkflowService,
+    PlanningWorkflowError,
+    sanitize_agent_message,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -65,7 +69,9 @@ def get_preferences(
     repositories: RepositoryBundle = Depends(get_repositories),
 ) -> TravelPreferences:
     logger.info("get_preferences user=%s", current_user.uid)
-    return repositories.preferences.get_by_user(current_user.uid) or default_preferences(current_user.uid)
+    return repositories.preferences.get_by_user(current_user.uid) or default_preferences(
+        current_user.uid
+    )
 
 
 @router.put("/preferences", response_model=TravelPreferences)
@@ -75,9 +81,13 @@ def update_preferences(
     repositories: RepositoryBundle = Depends(get_repositories),
 ) -> TravelPreferences:
     logger.info("update_preferences user=%s fields=%s", current_user.uid, request.to_update_dict())
-    existing = repositories.preferences.get_by_user(current_user.uid) or default_preferences(current_user.uid)
+    existing = repositories.preferences.get_by_user(current_user.uid) or default_preferences(
+        current_user.uid
+    )
     try:
-        updated = PreferenceService().update_onboarding_preferences(existing, **request.to_update_dict())
+        updated = PreferenceService().update_onboarding_preferences(
+            existing, **request.to_update_dict()
+        )
     except Exception as exc:
         logger.exception("update_preferences failed for user=%s", current_user.uid)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -92,7 +102,9 @@ def reset_preferences(
     repositories: RepositoryBundle = Depends(get_repositories),
 ) -> TravelPreferences:
     logger.info("reset_preferences user=%s", current_user.uid)
-    existing = repositories.preferences.get_by_user(current_user.uid) or default_preferences(current_user.uid)
+    existing = repositories.preferences.get_by_user(current_user.uid) or default_preferences(
+        current_user.uid
+    )
     reset = PreferenceService().reset_onboarding_preferences(existing)
     repositories.preferences.update(current_user.uid, reset)
     _audit(repositories, current_user.uid, "preferences.reset", "preferences", current_user.uid)
@@ -112,7 +124,9 @@ def places_autocomplete(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
     except Exception:
         logger.exception("places_autocomplete failed input=%s", input)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Autocomplete service unavailable.")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="Autocomplete service unavailable."
+        )
     return PlacesAutocompleteResponse(
         suggestions=[
             PlacesAutocompleteSuggestionSchema(place_id=s.place_id, description=s.description)
@@ -154,7 +168,12 @@ def generate_itinerary(
     repositories: RepositoryBundle = Depends(get_repositories),
     planning_service: ADKPlanningWorkflowService = Depends(get_planning_service),
 ) -> Itinerary:
-    logger.info("generate_itinerary user=%s title=%s brief=%s", current_user.uid, request.title, request.brief)
+    logger.info(
+        "generate_itinerary user=%s title=%s brief=%s",
+        current_user.uid,
+        request.title,
+        request.brief,
+    )
     preferences = _require_completed_onboarding(current_user.uid, repositories)
     try:
         result = planning_service.generate_itinerary(
@@ -163,7 +182,9 @@ def generate_itinerary(
             preferences=preferences,
         )
     except PlanningWorkflowError as exc:
-        logger.exception("generate_itinerary failed for user=%s brief=%s", current_user.uid, request.brief)
+        logger.exception(
+            "generate_itinerary failed for user=%s brief=%s", current_user.uid, request.brief
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
@@ -207,7 +228,9 @@ def compute_itinerary_routes(
 ):
     logger.info(
         "compute_itinerary_routes itinerary_id=%s day_index=%s modes=%s",
-        itinerary_id, request.day_index, request.modes,
+        itinerary_id,
+        request.day_index,
+        request.modes,
     )
     itinerary = _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
 
@@ -317,9 +340,7 @@ def chat_with_itinerary_agent(
     action = result.get("action")
     new_stop = result.get("new_stop")
     insert_idx = result.get("insert_before_index")
-    agent_message = sanitize_agent_message(
-        result.get("agent_message", "")
-    )
+    agent_message = sanitize_agent_message(result.get("agent_message", ""))
 
     if action == "insert_stop" and new_stop is not None and insert_idx is not None:
         if insert_idx < 0:
@@ -342,7 +363,11 @@ def chat_with_itinerary_agent(
         stop_idx = timing_update.get("target_stop_index")
         time_window = timing_update.get("time_window")
         day = itinerary.days[request.day_index]
-        if isinstance(stop_idx, int) and 0 <= stop_idx < len(day.stops) and isinstance(time_window, str):
+        if (
+            isinstance(stop_idx, int)
+            and 0 <= stop_idx < len(day.stops)
+            and isinstance(time_window, str)
+        ):
             day.stops[stop_idx].time_window = time_window
             repositories.itineraries.update(itinerary.id, itinerary)
             _audit(repositories, current_user.uid, "chat.update_timing", "itinerary", itinerary.id)
@@ -358,7 +383,13 @@ def chat_with_itinerary_agent(
         if isinstance(modes, list):
             itinerary.brief.preferred_transport_modes = [str(mode) for mode in modes]
             repositories.itineraries.update(itinerary.id, itinerary)
-            _audit(repositories, current_user.uid, "chat.update_transport_mode", "itinerary", itinerary.id)
+            _audit(
+                repositories,
+                current_user.uid,
+                "chat.update_transport_mode",
+                "itinerary",
+                itinerary.id,
+            )
             return ChatResponse(
                 agent_message=agent_message or "Transport modes updated.",
                 action="update_transport_mode",
@@ -389,8 +420,7 @@ def chat_with_itinerary_agent(
         )
 
     return ChatResponse(
-        agent_message=agent_message
-        or "I can only help with adding activities to this itinerary.",
+        agent_message=agent_message or "I can only help with adding activities to this itinerary.",
         action=action or "rejected",
     )
 
@@ -471,6 +501,26 @@ def booking_twiml(
     )
 
 
+@router.post("/booking-calls/voice-menu/{stream_token}", include_in_schema=False)
+async def booking_voice_menu(
+    stream_token: str,
+    request: Request,
+    booking_service: BookingCallService = Depends(get_booking_service),
+) -> Response:
+    try:
+        form = await request.form()
+        digits = str(form.get("Digits") or "")
+    except Exception:
+        digits = ""
+    return Response(
+        content=booking_service.handle_voice_menu_choice(
+            stream_token=stream_token,
+            digits=digits,
+        ),
+        media_type="application/xml",
+    )
+
+
 @router.websocket("/booking-calls/stream/{stream_token}")
 async def booking_call_stream(
     websocket: WebSocket,
@@ -482,6 +532,7 @@ async def booking_call_stream(
 def _parse_duration(duration_str: str) -> int:
     """Parse a duration string like '123s' or '1h30m' into seconds."""
     import re
+
     total = 0
     match = re.match(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", duration_str)
     if match:
@@ -499,7 +550,12 @@ def update_itinerary(
     current_user: VerifiedUser = Depends(get_current_user),
     repositories: RepositoryBundle = Depends(get_repositories),
 ) -> Itinerary:
-    logger.info("update_itinerary user=%s itinerary_id=%s title=%s", current_user.uid, itinerary_id, request.title)
+    logger.info(
+        "update_itinerary user=%s itinerary_id=%s title=%s",
+        current_user.uid,
+        itinerary_id,
+        request.title,
+    )
     itinerary = _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
     updates: dict[str, object] = {}
     if request.title is not None:
@@ -538,7 +594,12 @@ def start_itinerary(
     current_user: VerifiedUser = Depends(get_current_user),
     repositories: RepositoryBundle = Depends(get_repositories),
 ) -> LifecycleResult:
-    logger.info("start_itinerary user=%s itinerary_id=%s confirm_replace=%s", current_user.uid, itinerary_id, confirm_replace)
+    logger.info(
+        "start_itinerary user=%s itinerary_id=%s confirm_replace=%s",
+        current_user.uid,
+        itinerary_id,
+        confirm_replace,
+    )
     _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
     result = _run_lifecycle(
         ItineraryLifecycleService().start_itinerary(
@@ -605,9 +666,13 @@ def save_itinerary_preference_pattern(
     current_user: VerifiedUser = Depends(get_current_user),
     repositories: RepositoryBundle = Depends(get_repositories),
 ) -> TravelPreferences:
-    logger.info("save_itinerary_preference_pattern user=%s itinerary_id=%s", current_user.uid, itinerary_id)
+    logger.info(
+        "save_itinerary_preference_pattern user=%s itinerary_id=%s", current_user.uid, itinerary_id
+    )
     itinerary = _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
-    preferences = repositories.preferences.get_by_user(current_user.uid) or default_preferences(current_user.uid)
+    preferences = repositories.preferences.get_by_user(current_user.uid) or default_preferences(
+        current_user.uid
+    )
     pattern = ItineraryPreferencePattern(
         id=f"pattern-{uuid4().hex}",
         itinerary_id=itinerary.id,
@@ -625,7 +690,13 @@ def save_itinerary_preference_pattern(
         explicit_user_action=True,
     )
     repositories.preferences.update(current_user.uid, updated)
-    _audit(repositories, current_user.uid, "preferences.add_itinerary_pattern", "itinerary", itinerary.id)
+    _audit(
+        repositories,
+        current_user.uid,
+        "preferences.add_itinerary_pattern",
+        "itinerary",
+        itinerary.id,
+    )
     return updated
 
 
@@ -697,9 +768,16 @@ def accept_recovery_proposal(
     repositories: RepositoryBundle = Depends(get_repositories),
     active_event_service: ActiveEventWorkflowService = Depends(get_active_event_service),
 ) -> RecoveryDecisionResponse:
-    logger.info("accept_recovery_proposal user=%s itinerary_id=%s proposal_id=%s", current_user.uid, itinerary_id, proposal_id)
+    logger.info(
+        "accept_recovery_proposal user=%s itinerary_id=%s proposal_id=%s",
+        current_user.uid,
+        itinerary_id,
+        proposal_id,
+    )
     _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
-    proposal = _require_owned_recovery_proposal(proposal_id, itinerary_id, current_user.uid, repositories)
+    proposal = _require_owned_recovery_proposal(
+        proposal_id, itinerary_id, current_user.uid, repositories
+    )
     accepted = active_event_service.accept_recovery_proposal(
         proposal=proposal,
         confirmed=True,
@@ -720,9 +798,16 @@ def reject_recovery_proposal(
     repositories: RepositoryBundle = Depends(get_repositories),
     active_event_service: ActiveEventWorkflowService = Depends(get_active_event_service),
 ) -> RecoveryDecisionResponse:
-    logger.info("reject_recovery_proposal user=%s itinerary_id=%s proposal_id=%s", current_user.uid, itinerary_id, proposal_id)
+    logger.info(
+        "reject_recovery_proposal user=%s itinerary_id=%s proposal_id=%s",
+        current_user.uid,
+        itinerary_id,
+        proposal_id,
+    )
     _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
-    proposal = _require_owned_recovery_proposal(proposal_id, itinerary_id, current_user.uid, repositories)
+    proposal = _require_owned_recovery_proposal(
+        proposal_id, itinerary_id, current_user.uid, repositories
+    )
     rejected = active_event_service.reject_recovery_proposal(
         proposal=proposal,
         repositories=_active_repositories(repositories),
@@ -754,7 +839,9 @@ def _require_owned_itinerary(
 ) -> Itinerary:
     itinerary = repositories.itineraries.get(itinerary_id)
     if itinerary is None or itinerary.user_id != user_id:
-        logger.warning("_require_owned_itinerary 404 itinerary_id=%s user_id=%s", itinerary_id, user_id)
+        logger.warning(
+            "_require_owned_itinerary 404 itinerary_id=%s user_id=%s", itinerary_id, user_id
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Itinerary not found.")
     return itinerary
 
@@ -767,7 +854,9 @@ def _require_owned_recovery_proposal(
 ) -> RecoveryProposal:
     proposal = repositories.recovery_proposals.get(proposal_id)
     if proposal is None or proposal.itinerary_id != itinerary_id or proposal.user_id != user_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recovery proposal not found.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Recovery proposal not found."
+        )
     return proposal
 
 

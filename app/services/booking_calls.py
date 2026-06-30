@@ -27,6 +27,7 @@ class BookingCallStatus(str, Enum):
     QUEUED = "queued"
     RINGING = "ringing"
     IN_PROGRESS = "in_progress"
+    BOOKED = "booked"
     COMPLETED = "completed"
     FAILED = "failed"
     FALLBACK_REQUIRED = "fallback_required"
@@ -254,6 +255,7 @@ class BookingCallService:
         if record is None or record.user_id != user_id:
             return None
         if record.status in {
+            BookingCallStatus.BOOKED,
             BookingCallStatus.COMPLETED,
             BookingCallStatus.FAILED,
             BookingCallStatus.FALLBACK_REQUIRED,
@@ -268,13 +270,14 @@ class BookingCallService:
         public_base = settings.public_backend_base_url.rstrip("/")
         ws_base = public_base.replace("https://", "wss://").replace("http://", "ws://")
         stream_url = f"{ws_base}/v1/booking-calls/stream/{escape(stream_token)}"
+        menu_url = f"{public_base}/v1/booking-calls/voice-menu/{escape(stream_token)}"
         return (
             '<?xml version="1.0" encoding="UTF-8"?>'
             "<Response>"
             "<Connect>"
             f'<Stream url="{stream_url}" />'
             "</Connect>"
-            "<Say>The booking assistant connection ended.</Say>"
+            f"{self._confirmation_menu_twiml(stream_token, action_url=menu_url)}"
             "</Response>"
         )
 
@@ -282,10 +285,11 @@ class BookingCallService:
         for record in self._records.values():
             if record.twilio_call_sid != call_sid:
                 continue
-            mapped = _map_twilio_status(status)
+            mapped = _map_twilio_status(status, current_status=record.status)
             record.status = mapped
             record.updated_at = _utc_now()
             if mapped in {
+                BookingCallStatus.BOOKED,
                 BookingCallStatus.COMPLETED,
                 BookingCallStatus.FAILED,
                 BookingCallStatus.FALLBACK_REQUIRED,
@@ -293,6 +297,45 @@ class BookingCallService:
                 record.result_summary = record.result_summary or _terminal_summary(mapped)
                 self._records[record.call_id] = _scrub_record(record)
             return
+
+    def handle_voice_menu_choice(self, *, stream_token: str, digits: str | None) -> str:
+        context = self._stream_contexts.get(stream_token)
+        if context is None or context.expires_at < datetime.now(timezone.utc):
+            return (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                "<Response><Say>This booking session has expired. Goodbye.</Say><Hangup /></Response>"
+            )
+        record = context.record
+        public_base = get_settings().public_backend_base_url.rstrip("/")
+        menu_url = f"{public_base}/v1/booking-calls/voice-menu/{escape(stream_token)}"
+        if digits == "2":
+            record.status = BookingCallStatus.BOOKED
+            record.result_summary = "The venue confirmed that the booking request was received."
+            record.updated_at = _utc_now()
+            self._records[record.call_id] = _scrub_record(record)
+            self._stream_contexts.pop(stream_token, None)
+            return (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                "<Response>"
+                "<Say>Thank you. The booking has been marked as received. Goodbye.</Say>"
+                "<Hangup />"
+                "</Response>"
+            )
+        if digits == "1":
+            return (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                "<Response>"
+                f"<Say>{escape(_booking_voice_summary(record))}</Say>"
+                f"{self._confirmation_menu_twiml(stream_token, action_url=menu_url)}"
+                "</Response>"
+            )
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            "<Response>"
+            "<Say>I did not receive a valid selection.</Say>"
+            f"{self._confirmation_menu_twiml(stream_token, action_url=menu_url)}"
+            "</Response>"
+        )
 
     async def bridge_stream(self, websocket: WebSocket, stream_token: str) -> None:
         context = self._stream_contexts.get(stream_token)
@@ -306,10 +349,8 @@ class BookingCallService:
         bridge = GeminiLiveTwilioBridge(context)
         try:
             await bridge.run(websocket)
-            context.record.status = BookingCallStatus.COMPLETED
-            context.record.result_summary = (
-                "The booking call ended. Review venue confirmation details in the chat."
-            )
+            context.record.status = BookingCallStatus.IN_PROGRESS
+            context.record.result_summary = "The booking details were delivered. Waiting for the venue to press 2 to confirm receipt."
         except Exception as exc:
             logger.warning(
                 "booking media bridge failed call_id=%s: %s", context.record.call_id, exc
@@ -321,7 +362,12 @@ class BookingCallService:
         finally:
             context.record.updated_at = _utc_now()
             self._records[context.record.call_id] = _scrub_record(context.record)
-            self._stream_contexts.pop(stream_token, None)
+            if context.record.status in {
+                BookingCallStatus.BOOKED,
+                BookingCallStatus.FAILED,
+                BookingCallStatus.FALLBACK_REQUIRED,
+            }:
+                self._stream_contexts.pop(stream_token, None)
             await _safe_close(websocket)
 
     def _lookup_venue_phone(self, stop: PlaceStop, region: str) -> str | None:
@@ -350,6 +396,17 @@ class BookingCallService:
             record=False,
         )
         return str(call.sid)
+
+    def _confirmation_menu_twiml(self, stream_token: str, *, action_url: str) -> str:
+        _ = stream_token
+        return (
+            f'<Gather numDigits="1" action="{escape(action_url)}" method="POST" timeout="12">'
+            "<Say>Press 1 to hear the booking information again. "
+            "Press 2 if the booking request has been received.</Say>"
+            "</Gather>"
+            "<Say>No confirmation was received. Goodbye.</Say>"
+            "<Hangup />"
+        )
 
 
 class GeminiLiveTwilioBridge:
@@ -504,8 +561,14 @@ def _public_record(record: BookingCallRecord) -> BookingCallRecord:
     return record.model_copy(update={"details": None}, deep=True)
 
 
-def _map_twilio_status(status: str) -> BookingCallStatus:
+def _map_twilio_status(
+    status: str,
+    *,
+    current_status: BookingCallStatus | None = None,
+) -> BookingCallStatus:
     normalized = status.lower()
+    if current_status == BookingCallStatus.BOOKED:
+        return BookingCallStatus.BOOKED
     if normalized in {"queued", "initiated"}:
         return BookingCallStatus.QUEUED
     if normalized == "ringing":
@@ -513,14 +576,19 @@ def _map_twilio_status(status: str) -> BookingCallStatus:
     if normalized in {"answered", "in-progress"}:
         return BookingCallStatus.IN_PROGRESS
     if normalized == "completed":
-        return BookingCallStatus.COMPLETED
+        return BookingCallStatus.FAILED
     return BookingCallStatus.FAILED
 
 
 def _terminal_summary(status: BookingCallStatus) -> str:
+    if status == BookingCallStatus.BOOKED:
+        return "The venue confirmed that the booking request was received."
     if status == BookingCallStatus.COMPLETED:
         return "The booking call completed. Check chat for details and any follow-up."
-    return "The booking call could not complete. Use the chat instructions to book manually."
+    return (
+        "The booking call ended before the venue confirmed receipt. "
+        "Use the chat instructions to book manually."
+    )
 
 
 def _twilio_payload_to_pcm16(payload: str) -> bytes:
@@ -556,7 +624,20 @@ def _booking_voice_instruction(record: BookingCallRecord) -> str:
         f"Give callback number {details.callback_phone}.{special} "
         "Do not provide or request payment card details. Do not purchase anything. "
         "If the venue asks for payment, say the traveler will follow up directly. "
-        "At the end, summarize whether the reservation was confirmed, failed, or needs follow-up."
+        "After giving the booking details, tell the venue that the automated system will ask them "
+        "to press 1 to hear the information again or press 2 if the booking request has been received."
+    )
+
+
+def _booking_voice_summary(record: BookingCallRecord) -> str:
+    details = record.details
+    if details is None:
+        return "The booking details are unavailable."
+    special = f" Special requests: {details.special_requests}." if details.special_requests else ""
+    return (
+        f"Booking request for {details.venue_name}: {details.reservation_datetime}, "
+        f"party of {details.party_size}, under {details.reservation_name}. "
+        f"Callback number {details.callback_phone}.{special}"
     )
 
 

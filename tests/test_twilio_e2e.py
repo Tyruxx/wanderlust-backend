@@ -39,9 +39,9 @@ def test_twilio_booking_call_e2e_env_and_outbound_call() -> None:
         if not value
     ]
     assert not missing, "Missing required Twilio e2e env values: " + ", ".join(missing)
-    assert settings.public_backend_base_url.startswith(
-        "https://"
-    ), "PUBLIC_BACKEND_BASE_URL must be a public HTTPS URL for Twilio voice webhooks."
+    assert settings.public_backend_base_url.startswith("https://"), (
+        "PUBLIC_BACKEND_BASE_URL must be a public HTTPS URL for Twilio voice webhooks."
+    )
 
     public_base = settings.public_backend_base_url.rstrip("/")
     ready = httpx.get(f"{public_base}/readyz", timeout=10)
@@ -81,13 +81,16 @@ def test_twilio_booking_call_e2e_env_and_outbound_call() -> None:
         assert record.details is None
         assert record.fallback_instructions
 
-        # Allow Twilio to register the call, then simulate the terminal callback
+        # Allow Twilio to register the call, then simulate the venue pressing 2
         # locally to verify the app's status scrubbing guardrail.
         sleep(1)
+        assert service._stream_contexts  # noqa: SLF001
+        stream_token = next(iter(service._stream_contexts.keys()))  # noqa: SLF001
+        service.handle_voice_menu_choice(stream_token=stream_token, digits="2")
         service.update_twilio_status(call_sid=twilio_sid, status="completed")
         status = service.get_status(record.call_id, user_id="twilio-e2e-user")
         assert status is not None
-        assert status.status == BookingCallStatus.COMPLETED
+        assert status.status == BookingCallStatus.BOOKED
         assert status.details is None
     finally:
         if twilio_sid:
@@ -105,7 +108,9 @@ def _e2e_itinerary() -> Itinerary:
         user_id="twilio-e2e-user",
         title="Twilio E2E",
         status=ItineraryStatus.INACTIVE,
-        brief=TripBrief(region="E2E", description="Twilio booking-call smoke test", trip_length_days=1),
+        brief=TripBrief(
+            region="E2E", description="Twilio booking-call smoke test", trip_length_days=1
+        ),
         preference_version=1,
         days=[
             DayPlan(
