@@ -169,6 +169,18 @@ class ChatResponse(BaseModel):
     booking_fallback: dict[str, str] | None = None
 
 
+class AskAnythingActivityRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
+    day_index: int = Field(ge=0)
+    stop_index: int = Field(ge=0)
+
+
+class AskAnythingActivityResponse(BaseModel):
+    agent_message: str
+    intent: str
+    suggested_destination: str | None = None
+
+
 class BookingCallCreateRequest(BaseModel):
     day_index: int = Field(ge=0)
     stop_index: int = Field(ge=0)

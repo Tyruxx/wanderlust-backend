@@ -13,6 +13,8 @@ from app.api.dependencies import (
     get_repositories,
 )
 from app.api.schemas import (
+    AskAnythingActivityRequest,
+    AskAnythingActivityResponse,
     ChatRequest,
     ChatResponse,
     BookingCallCreateRequest,
@@ -43,6 +45,7 @@ from app.domain.models import (
     TravelPreferences,
 )
 from app.services.active_events import ActiveEventRepositoryBundle, ActiveEventWorkflowService
+from app.services.ask_anything import AskAnythingRequest, AskAnythingRouter
 from app.services.auth import VerifiedUser
 from app.services.booking_calls import BookingCallService, get_booking_call_service
 from app.services.guardrails import (
@@ -429,6 +432,39 @@ def chat_with_itinerary_agent(
     return ChatResponse(
         agent_message=agent_message or "I can only help with adding activities to this itinerary.",
         action=action or "rejected",
+    )
+
+
+@router.post(
+    "/itineraries/{itinerary_id}/ask-anything",
+    response_model=AskAnythingActivityResponse,
+)
+def ask_agent_anything(
+    itinerary_id: str,
+    request: AskAnythingActivityRequest,
+    current_user: VerifiedUser = Depends(get_current_user),
+    repositories: RepositoryBundle = Depends(get_repositories),
+) -> AskAnythingActivityResponse:
+    itinerary = _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
+    if request.day_index >= len(itinerary.days):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="day_index out of range")
+    day = itinerary.days[request.day_index]
+    if request.stop_index >= len(day.stops):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="stop_index out of range",
+        )
+    stop = day.stops[request.stop_index]
+    routed = AskAnythingRouter().classify(
+        AskAnythingRequest(message=request.message, venue_name=stop.name)
+    )
+    _audit(repositories, current_user.uid, "ask_anything.classify", "itinerary", itinerary.id)
+    return AskAnythingActivityResponse(
+        agent_message=routed.agent_message,
+        intent=routed.intent.value,
+        suggested_destination=(
+            routed.suggested_destination.value if routed.suggested_destination else None
+        ),
     )
 
 

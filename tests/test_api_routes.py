@@ -283,6 +283,31 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(checkout.status_code, 200)
         self.assertEqual(checkout.json()["checkout_url"], result["results"][0]["checkout_url"])
 
+    def test_ask_anything_routes_to_call_or_package_ctas_without_side_effects(self) -> None:
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(user_id="user-1", version=2, onboarding_required=False),
+        )
+        itinerary = self.client.post("/v1/itineraries", json=chat_itinerary_payload()).json()
+
+        booking = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/ask-anything",
+            json={"message": "Can you call to book this?", "day_index": 0, "stop_index": 0},
+        )
+        self.assertEqual(booking.status_code, 200)
+        self.assertEqual(booking.json()["intent"], "booking")
+        self.assertEqual(booking.json()["suggested_destination"], "call_venue")
+
+        purchase = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/ask-anything",
+            json={"message": "Can I buy tickets?", "day_index": 0, "stop_index": 0},
+        )
+        self.assertEqual(purchase.status_code, 200)
+        self.assertEqual(purchase.json()["intent"], "purchase")
+        self.assertEqual(purchase.json()["suggested_destination"], "book_or_buy_packages")
+        self.assertEqual(len(self.itineraries.items), 1)
+        self.assertEqual(len(self.recovery_proposals.items), 0)
+
     def test_start_requires_replacement_confirmation_then_switches_active_itinerary(self) -> None:
         self.preferences.create(
             "user-1",
@@ -317,7 +342,7 @@ class ApiRouteTests(unittest.TestCase):
             "user-1",
             TravelPreferences(user_id="user-1", version=5, onboarding_required=False),
         )
-        itinerary = self.client.post("/v1/itineraries", json=itinerary_payload()).json()
+        itinerary = self.client.post("/v1/itineraries", json=chat_itinerary_payload()).json()
 
         self.assertEqual(self.client.post(f"/v1/itineraries/{itinerary['id']}/start").status_code, 200)
         self.assertEqual(self.client.post(f"/v1/itineraries/{itinerary['id']}/stop").status_code, 200)
@@ -372,7 +397,7 @@ class ApiRouteTests(unittest.TestCase):
             "user-1",
             TravelPreferences(user_id="user-1", version=4, onboarding_required=False),
         )
-        itinerary = self.client.post("/v1/itineraries", json=itinerary_payload()).json()
+        itinerary = self.client.post("/v1/itineraries", json=chat_itinerary_payload()).json()
         self.client.post(f"/v1/itineraries/{itinerary['id']}/start")
 
         event_response = self.client.post(
@@ -397,6 +422,35 @@ class ApiRouteTests(unittest.TestCase):
         )
         self.assertEqual(accept_response.status_code, 200)
         self.assertEqual(accept_response.json()["status"], "ACCEPTED")
+        stored = self.itineraries.get(itinerary["id"])
+        self.assertEqual(stored.days[0].stops[0].name if stored else None, "Colosseum")
+
+    def test_recovery_proposal_is_only_created_for_deviation_and_can_be_rejected(self) -> None:
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(user_id="user-1", version=4, onboarding_required=False),
+        )
+        itinerary = self.client.post("/v1/itineraries", json=itinerary_payload()).json()
+        self.client.post(f"/v1/itineraries/{itinerary['id']}/start")
+
+        normal_event = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/location-events",
+            json=location_event_payload(deviation_detected=False),
+        )
+        self.assertEqual(normal_event.status_code, 200)
+        self.assertIsNone(normal_event.json()["recovery_proposal"])
+        self.assertEqual(len(self.recovery_proposals.items), 0)
+
+        deviated = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/location-events",
+            json=location_event_payload(deviation_detected=True),
+        )
+        proposal_id = deviated.json()["recovery_proposal"]["id"]
+        reject_response = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/recovery-proposals/{proposal_id}/reject"
+        )
+        self.assertEqual(reject_response.status_code, 200)
+        self.assertEqual(reject_response.json()["status"], "REJECTED")
 
 
 def itinerary_payload(title: str = "Singapore Food Trip") -> dict[str, object]:
