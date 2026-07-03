@@ -319,6 +319,7 @@ class BookingCallService:
         if record is None or record.user_id != user_id:
             return False
         self._status_subscribers.setdefault(call_id, set()).add(websocket)
+        self._push_status_update(call_id)
         return True
 
     def unsubscribe_status(self, call_id: str, websocket: WebSocket) -> None:
