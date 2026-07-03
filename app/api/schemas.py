@@ -188,6 +188,10 @@ class BookingCallCreateRequest(BaseModel):
     confirmed: bool = False
 
 
+class DirectBookingCallCreateRequest(BookingCallCreateRequest):
+    itinerary_id: str = Field(min_length=1, max_length=160)
+
+
 class BookingCallStatusResponse(BaseModel):
     call: BookingCallRecord
 

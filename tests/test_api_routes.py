@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import patch
 from typing import Generic, TypeVar
@@ -32,6 +33,7 @@ from app.main import app
 from app.services.active_events import ActiveEventWorkflowService
 from app.services.auth import VerifiedUser
 from app.services.booking_calls import BookingCallService
+from app.core.settings import get_settings
 from app.services.repositories import AuditLogEntry
 from app.services.planning import PlanningResult
 
@@ -78,11 +80,7 @@ class InMemoryItineraryRepository(InMemoryRepository[Itinerary]):
 
     def find_active(self, user_id: str) -> Itinerary | None:
         return next(
-            (
-                item
-                for item in self.find_by_user(user_id)
-                if item.status == ItineraryStatus.ACTIVE
-            ),
+            (item for item in self.find_by_user(user_id) if item.status == ItineraryStatus.ACTIVE),
             None,
         )
 
@@ -94,6 +92,19 @@ class InMemoryDynamicPreferencesRepository(InMemoryRepository[DynamicBehaviorPre
 
 class ApiRouteTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._env_snapshot = {
+            key: os.environ.get(key)
+            for key in (
+                "TWILIO_ACCOUNT_SID",
+                "TWILIO_AUTH_TOKEN",
+                "TWILIO_FROM_NUMBER",
+                "PUBLIC_BACKEND_BASE_URL",
+                "GOOGLE_API_KEY",
+            )
+        }
+        for key in self._env_snapshot:
+            os.environ[key] = ""
+        get_settings.cache_clear()
         self.preferences = InMemoryPreferencesRepository()
         self.itineraries = InMemoryItineraryRepository()
         self.dynamic_preferences = InMemoryDynamicPreferencesRepository()
@@ -126,6 +137,12 @@ class ApiRouteTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
+        for key, value in self._env_snapshot.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        get_settings.cache_clear()
 
     def test_preferences_update_allows_itinerary_creation(self) -> None:
         prefs_response = self.client.put(
@@ -150,7 +167,9 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"]["code"], "onboarding_required")
 
-    def test_generate_itinerary_persists_planned_itinerary_evidence_and_recommendations(self) -> None:
+    def test_generate_itinerary_persists_planned_itinerary_evidence_and_recommendations(
+        self,
+    ) -> None:
         self.preferences.create(
             "user-1",
             TravelPreferences(
@@ -240,6 +259,37 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(body["status"], "fallback_required")
         self.assertIsNone(body["details"])
         self.assertIn("Colosseum", body["fallback_instructions"])
+
+    def test_direct_booking_call_does_not_require_cloud_itinerary_copy(self) -> None:
+        payload = {
+            "itinerary_id": "local-only-itinerary",
+            "day_index": 2,
+            "stop_index": 3,
+            "confirmed": False,
+            "details": {
+                "venue_name": "Bakmi Nikmat Rasa",
+                "venue_phone": "+6580241976",
+                "reservation_datetime": "2026-07-05 13:00",
+                "party_size": 2,
+                "reservation_name": "Jason",
+                "callback_phone": "+6512345678",
+            },
+        }
+
+        rejected = self.client.post("/v1/booking-calls", json=payload)
+        self.assertEqual(rejected.status_code, 400)
+
+        payload["confirmed"] = True
+        response = self.client.post("/v1/booking-calls", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()["call"]
+        self.assertEqual(body["itinerary_id"], "local-only-itinerary")
+        self.assertEqual(body["day_index"], 2)
+        self.assertEqual(body["stop_index"], 3)
+        self.assertEqual(body["venue_name"], "Bakmi Nikmat Rasa")
+        self.assertEqual(body["status"], "fallback_required")
+        self.assertIsNone(body["details"])
 
     def test_activity_package_search_and_provider_checkout_are_guarded(self) -> None:
         self.preferences.create(
@@ -344,16 +394,18 @@ class ApiRouteTests(unittest.TestCase):
         )
         itinerary = self.client.post("/v1/itineraries", json=chat_itinerary_payload()).json()
 
-        self.assertEqual(self.client.post(f"/v1/itineraries/{itinerary['id']}/start").status_code, 200)
-        self.assertEqual(self.client.post(f"/v1/itineraries/{itinerary['id']}/stop").status_code, 200)
+        self.assertEqual(
+            self.client.post(f"/v1/itineraries/{itinerary['id']}/start").status_code, 200
+        )
+        self.assertEqual(
+            self.client.post(f"/v1/itineraries/{itinerary['id']}/stop").status_code, 200
+        )
         self.assertEqual(
             self.client.post(f"/v1/itineraries/{itinerary['id']}/complete").status_code,
             200,
         )
 
-        pattern_response = self.client.post(
-            f"/v1/itineraries/{itinerary['id']}/preference-pattern"
-        )
+        pattern_response = self.client.post(f"/v1/itineraries/{itinerary['id']}/preference-pattern")
         self.assertEqual(pattern_response.status_code, 200)
         self.assertEqual(len(pattern_response.json()["saved_itinerary_patterns"]), 1)
 

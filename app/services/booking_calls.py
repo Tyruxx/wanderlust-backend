@@ -6,7 +6,7 @@ import json
 import logging
 import secrets
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from enum import Enum
 from uuid import uuid4
 from xml.sax.saxutils import escape
@@ -15,7 +15,14 @@ from fastapi import WebSocket
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.settings import get_settings
-from app.domain.models import AgentActionType, Itinerary, PlaceStop
+from app.domain.models import (
+    AgentActionType,
+    DayPlan,
+    Itinerary,
+    ItineraryStatus,
+    PlaceStop,
+    TripBrief,
+)
 from app.services.call_logs import (
     CallLogEntry,
     CallLogRepository,
@@ -264,6 +271,32 @@ class BookingCallService:
         self._records[record.call_id] = record
         self._log_call_record(record)
         return _public_record(record)
+
+    def start_direct_call(
+        self,
+        *,
+        user_id: str,
+        itinerary_id: str,
+        day_index: int,
+        stop_index: int,
+        details: BookingDetails,
+        confirmed: bool,
+    ) -> BookingCallRecord:
+        itinerary = _synthetic_itinerary_for_booking(
+            user_id=user_id,
+            itinerary_id=itinerary_id,
+            day_index=day_index,
+            stop_index=stop_index,
+            details=details,
+        )
+        return self.start_call(
+            user_id=user_id,
+            itinerary=itinerary,
+            day_index=day_index,
+            stop_index=stop_index,
+            details=details,
+            confirmed=confirmed,
+        )
 
     def get_status(self, call_id: str, user_id: str) -> BookingCallRecord | None:
         record = self._records.get(call_id)
@@ -547,6 +580,56 @@ def _require_stop(itinerary: Itinerary, day_index: int, stop_index: int) -> Plac
     if stop_index < 0 or stop_index >= len(stops):
         raise ValueError("target_stop_index out of range")
     return stops[stop_index]
+
+
+def _synthetic_itinerary_for_booking(
+    *,
+    user_id: str,
+    itinerary_id: str,
+    day_index: int,
+    stop_index: int,
+    details: BookingDetails,
+) -> Itinerary:
+    days: list[DayPlan] = []
+    for index in range(day_index + 1):
+        stops = [
+            PlaceStop(
+                id=f"booking-placeholder-stop-{index}-{stop}",
+                name="Booking context placeholder",
+                suggested_order=stop + 1,
+                what_to_do="Placeholder stop for cloud booking-call routing.",
+            )
+            for stop in range(stop_index + 1)
+        ]
+        days.append(
+            DayPlan(
+                day_number=index + 1,
+                start_location="Booking context",
+                end_location="Booking context",
+                start_time=time(hour=9),
+                end_time=time(hour=18),
+                stops=stops,
+            )
+        )
+    days[day_index].stops[stop_index] = PlaceStop(
+        id=f"booking-stop-{day_index}-{stop_index}",
+        name=details.venue_name,
+        suggested_order=stop_index + 1,
+        what_to_do="Booking-call target from explicit app request context.",
+    )
+    return Itinerary(
+        id=itinerary_id,
+        user_id=user_id,
+        title=f"Booking call for {details.venue_name}",
+        status=ItineraryStatus.INACTIVE,
+        brief=TripBrief(
+            region="",
+            description="Stateless cloud booking-call context",
+            trip_length_days=max(day_index + 1, 1),
+        ),
+        preference_version=1,
+        days=days,
+    )
 
 
 def _missing_booking_fields(details: BookingDetails | None) -> list[str]:

@@ -20,6 +20,7 @@ from app.api.schemas import (
     BookingCallCreateRequest,
     BookingCallStatusResponse,
     DeleteResponse,
+    DirectBookingCallCreateRequest,
     ExportRequestResponse,
     ItineraryCreateRequest,
     ItineraryUpdateRequest,
@@ -447,7 +448,9 @@ def ask_agent_anything(
 ) -> AskAnythingActivityResponse:
     itinerary = _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
     if request.day_index >= len(itinerary.days):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="day_index out of range")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="day_index out of range"
+        )
     day = itinerary.days[request.day_index]
     if request.stop_index >= len(day.stops):
         raise HTTPException(
@@ -554,6 +557,38 @@ def start_booking_call(
         logger.warning("start_booking_call rejected itinerary_id=%s: %s", itinerary_id, exc)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     _audit(repositories, current_user.uid, "booking_call.start", "itinerary", itinerary.id)
+    return BookingCallStatusResponse(call=record)
+
+
+@router.post("/booking-calls", response_model=BookingCallStatusResponse)
+def start_direct_booking_call(
+    request: DirectBookingCallCreateRequest,
+    current_user: VerifiedUser = Depends(get_current_user),
+    booking_service: BookingCallService = Depends(get_booking_service),
+) -> BookingCallStatusResponse:
+    logger.info(
+        "start_direct_booking_call user=%s itinerary_id=%s day=%s stop=%s",
+        current_user.uid,
+        request.itinerary_id,
+        request.day_index,
+        request.stop_index,
+    )
+    try:
+        record = booking_service.start_direct_call(
+            user_id=current_user.uid,
+            itinerary_id=request.itinerary_id,
+            day_index=request.day_index,
+            stop_index=request.stop_index,
+            details=request.details,
+            confirmed=request.confirmed,
+        )
+    except Exception as exc:
+        logger.warning(
+            "start_direct_booking_call rejected itinerary_id=%s: %s",
+            request.itinerary_id,
+            exc,
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     return BookingCallStatusResponse(call=record)
 
 
