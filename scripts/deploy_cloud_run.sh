@@ -16,6 +16,7 @@ gcloud services enable \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
   secretmanager.googleapis.com \
+  firestore.googleapis.com \
   --project "${GOOGLE_CLOUD_PROJECT}"
 
 if ! gcloud artifacts repositories describe "${ARTIFACT_REGISTRY_REPOSITORY}" \
@@ -26,6 +27,11 @@ if ! gcloud artifacts repositories describe "${ARTIFACT_REGISTRY_REPOSITORY}" \
     --location "${GOOGLE_CLOUD_REGION}" \
     --repository-format docker
 fi
+
+gcloud projects add-iam-policy-binding "${GOOGLE_CLOUD_PROJECT}" \
+  --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+  --role roles/datastore.user \
+  >/dev/null
 
 if ! gcloud iam service-accounts describe "${SERVICE_ACCOUNT_EMAIL}" \
   --project "${GOOGLE_CLOUD_PROJECT}" >/dev/null 2>&1; then
@@ -64,7 +70,7 @@ gcloud run deploy "${CLOUD_RUN_SERVICE}" \
   --timeout 3600 \
   --min-instances 1 \
   --max-instances 1 \
-  --set-env-vars "APP_ENV=production,APP_NAME=Wanderlust Trip Backend,BACKEND_HOST=0.0.0.0,BACKEND_PORT=8080,BACKEND_BASE_URL=${PUBLIC_BASE},FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-},CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*},USE_VERTEX_AI=${USE_VERTEX_AI:-false},VERTEX_AI_LOCATION=${VERTEX_AI_LOCATION:-${GOOGLE_CLOUD_REGION}},GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash},GEMINI_LIVE_MODEL=${GEMINI_LIVE_MODEL:-gemini-3.1-flash-live-preview},BOOKING_CALL_MAX_SECONDS=${BOOKING_CALL_MAX_SECONDS:-300},PUBLIC_BACKEND_BASE_URL=${PUBLIC_BASE}" \
+  --set-env-vars "APP_ENV=production,APP_NAME=Wanderlust Trip Backend,BACKEND_HOST=0.0.0.0,BACKEND_PORT=8080,BACKEND_BASE_URL=${PUBLIC_BASE},FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-},CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*},USE_VERTEX_AI=${USE_VERTEX_AI:-false},VERTEX_AI_LOCATION=${VERTEX_AI_LOCATION:-${GOOGLE_CLOUD_REGION}},GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash},GEMINI_LIVE_MODEL=${GEMINI_LIVE_MODEL:-gemini-3.1-flash-live-preview},BOOKING_CALL_MAX_SECONDS=${BOOKING_CALL_MAX_SECONDS:-300},PUBLIC_BACKEND_BASE_URL=${PUBLIC_BASE},CALL_LOG_BACKEND=${CALL_LOG_BACKEND:-firestore},CALL_LOG_COLLECTION=${CALL_LOG_COLLECTION:-wanderlust_booking_call_logs}" \
   --set-secrets "GOOGLE_API_KEY=google-api-key:latest,GOOGLE_MAPS_BACKEND_API_KEY=google-maps-backend-api-key:latest,TWILIO_ACCOUNT_SID=twilio-account-sid:latest,TWILIO_AUTH_TOKEN=twilio-auth-token:latest,TWILIO_FROM_NUMBER=twilio-from-number:latest"
 
 SERVICE_URL="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \

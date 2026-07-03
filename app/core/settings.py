@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     public_backend_base_url: str = ""
     gemini_live_model: str = "gemini-3.1-flash-live-preview"
     booking_call_max_seconds: int = 300
+    call_log_backend: str = "disabled"
+    call_log_collection: str = "wanderlust_booking_call_logs"
 
     log_level: str = "INFO"
     request_timeout_seconds: int = 30

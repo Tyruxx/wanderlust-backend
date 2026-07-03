@@ -4,6 +4,7 @@ import pytest
 
 from app.core.settings import get_settings
 from app.domain.models import DayPlan, Itinerary, ItineraryStatus, PlaceStop, TripBrief
+from app.services.call_logs import MemoryCallLogRepository
 from app.services.booking_calls import BookingCallService, BookingCallStatus, BookingDetails
 
 
@@ -92,6 +93,33 @@ def test_twilio_completed_without_keypad_confirmation_is_failed(monkeypatch) -> 
     assert "before the venue confirmed receipt" in (status.result_summary or "")
 
 
+def test_booking_call_logs_are_redacted(monkeypatch) -> None:
+    _configure_call_env(monkeypatch)
+    logs = MemoryCallLogRepository()
+    service = FakeBookingCallService()
+    service.call_log_repository = logs
+
+    record = service.start_call(
+        user_id="anon_sensitive-device-id",
+        itinerary=_itinerary(),
+        day_index=0,
+        stop_index=0,
+        details=_details_without_callback(),
+        confirmed=True,
+    )
+    service.update_twilio_status(call_sid="CA1234567890", status="ringing")
+    service.update_twilio_status(call_sid="CA1234567890", status="completed")
+
+    assert record.status == BookingCallStatus.QUEUED
+    assert len(logs.entries) >= 3
+    assert all(entry.call_id == record.call_id for entry in logs.entries)
+    assert all(entry.user_hash != "anon_sensitive-device-id" for entry in logs.entries)
+    dumped = " ".join(entry.model_dump_json() for entry in logs.entries)
+    assert "+15550001111" not in dumped
+    assert "+15551234567" not in dumped
+    assert "Ada" not in dumped
+
+
 def _configure_call_env(monkeypatch) -> None:
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC123")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
@@ -109,6 +137,16 @@ def _details() -> BookingDetails:
         party_size=2,
         reservation_name="Ada",
         callback_phone="+15550001111",
+    )
+
+
+def _details_without_callback() -> BookingDetails:
+    return BookingDetails(
+        venue_name="Test Venue",
+        venue_phone="+15551234567",
+        reservation_datetime="tomorrow at 7pm",
+        party_size=2,
+        reservation_name="Ada",
     )
 
 

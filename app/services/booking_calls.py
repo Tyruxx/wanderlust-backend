@@ -16,6 +16,14 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.core.settings import get_settings
 from app.domain.models import AgentActionType, Itinerary, PlaceStop
+from app.services.call_logs import (
+    CallLogEntry,
+    CallLogRepository,
+    build_call_log_repository,
+    redact_user_id,
+    safe_write_call_log,
+    utc_now as call_log_utc_now,
+)
 from app.services.guardrails import ActionGuardrailService
 from app.services.maps import GoogleMapsClient, MapsIntegrationError
 
@@ -40,12 +48,14 @@ class BookingDetails(BaseModel):
     reservation_datetime: str
     party_size: int = Field(ge=1, le=30)
     reservation_name: str = Field(min_length=1, max_length=120)
-    callback_phone: str = Field(min_length=5, max_length=40)
+    callback_phone: str | None = Field(default=None, min_length=5, max_length=40)
     special_requests: str | None = Field(default=None, max_length=500)
 
     @field_validator("callback_phone")
     @classmethod
-    def callback_phone_is_reasonable(cls, value: str) -> str:
+    def callback_phone_is_reasonable(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
         return _validate_reachable_phone(value, field_name="callback_phone")
 
     @field_validator("venue_phone")
@@ -107,8 +117,10 @@ class BookingCallService:
         self,
         *,
         maps_client: GoogleMapsClient | None = None,
+        call_log_repository: CallLogRepository | None = None,
     ) -> None:
         self.maps_client = maps_client or GoogleMapsClient()
+        self.call_log_repository = call_log_repository or build_call_log_repository()
         self._records: dict[str, BookingCallRecord] = {}
         self._stream_contexts: dict[str, _LiveCallContext] = {}
 
@@ -220,6 +232,7 @@ class BookingCallService:
         )
         if not offer.can_call or offer.details is None or not offer.details.venue_phone:
             self._records[record.call_id] = _scrub_record(record)
+            self._log_call_record(self._records[record.call_id])
             return self._records[record.call_id]
 
         settings = get_settings()
@@ -241,6 +254,7 @@ class BookingCallService:
             record.result_summary = "The call service could not start. Use the chat instructions."
             self._records[record.call_id] = _scrub_record(record)
             self._stream_contexts.pop(stream_token, None)
+            self._log_call_record(self._records[record.call_id])
             return self._records[record.call_id]
 
         record.status = BookingCallStatus.QUEUED
@@ -248,6 +262,7 @@ class BookingCallService:
         record.updated_at = _utc_now()
         self._stream_contexts[stream_token].record = record
         self._records[record.call_id] = record
+        self._log_call_record(record)
         return _public_record(record)
 
     def get_status(self, call_id: str, user_id: str) -> BookingCallRecord | None:
@@ -296,6 +311,7 @@ class BookingCallService:
             }:
                 record.result_summary = record.result_summary or _terminal_summary(mapped)
                 self._records[record.call_id] = _scrub_record(record)
+            self._log_call_record(record)
             return
 
     def handle_voice_menu_choice(self, *, stream_token: str, digits: str | None) -> str:
@@ -313,6 +329,7 @@ class BookingCallService:
             record.result_summary = "The venue confirmed that the booking request was received."
             record.updated_at = _utc_now()
             self._records[record.call_id] = _scrub_record(record)
+            self._log_call_record(record)
             self._stream_contexts.pop(stream_token, None)
             return (
                 '<?xml version="1.0" encoding="UTF-8"?>'
@@ -368,6 +385,7 @@ class BookingCallService:
                 BookingCallStatus.FALLBACK_REQUIRED,
             }:
                 self._stream_contexts.pop(stream_token, None)
+            self._log_call_record(context.record)
             await _safe_close(websocket)
 
     def _lookup_venue_phone(self, stop: PlaceStop, region: str) -> str | None:
@@ -396,6 +414,23 @@ class BookingCallService:
             record=False,
         )
         return str(call.sid)
+
+    def _log_call_record(self, record: BookingCallRecord) -> None:
+        safe_write_call_log(
+            self.call_log_repository,
+            CallLogEntry(
+                call_id=record.call_id,
+                itinerary_id=record.itinerary_id,
+                user_hash=redact_user_id(record.user_id),
+                day_index=record.day_index,
+                stop_index=record.stop_index,
+                venue_name=record.venue_name,
+                status=record.status.value,
+                provider_call_sid=record.twilio_call_sid,
+                result_summary=record.result_summary,
+                occurred_at=call_log_utc_now(),
+            ),
+        )
 
     def _confirmation_menu_twiml(self, stream_token: str, *, action_url: str) -> str:
         _ = stream_token
@@ -520,14 +555,12 @@ def _missing_booking_fields(details: BookingDetails | None) -> list[str]:
             "reservation_datetime",
             "party_size",
             "reservation_name",
-            "callback_phone",
         ]
     missing: list[str] = []
     for field_name in [
         "reservation_datetime",
         "party_size",
         "reservation_name",
-        "callback_phone",
     ]:
         value = getattr(details, field_name)
         if value is None or (isinstance(value, str) and not value.strip()):
@@ -539,13 +572,14 @@ def _fallback_instructions(venue_name: str, details: BookingDetails | None) -> s
     if details is None:
         return (
             f"To book {venue_name}, contact the venue directly with your preferred date, time, "
-            "party size, reservation name, callback number, and any special requests."
+            "party size, reservation name, and any special requests."
         )
     requests = f" Special requests: {details.special_requests}." if details.special_requests else ""
+    callback = f" Give callback number {details.callback_phone}." if details.callback_phone else ""
     return (
         f"To book {venue_name}, ask for a reservation on {details.reservation_datetime} "
         f"for {details.party_size} under {details.reservation_name}. "
-        f"Give callback number {details.callback_phone}.{requests}"
+        f"{callback}{requests}"
     )
 
 
@@ -616,12 +650,13 @@ def _booking_voice_instruction(record: BookingCallRecord) -> str:
             "If details are missing, politely end the call and ask the user to use chat instructions."
         )
     special = f" Special requests: {details.special_requests}." if details.special_requests else ""
+    callback = f" Give callback number {details.callback_phone}." if details.callback_phone else ""
     return (
         "You are an AI booking assistant calling a venue on behalf of a traveler. "
         "Immediately disclose that you are an AI assistant calling for the traveler. "
         f"Request a reservation at {details.venue_name} for {details.reservation_datetime}, "
         f"party of {details.party_size}, under {details.reservation_name}. "
-        f"Give callback number {details.callback_phone}.{special} "
+        f"{callback}{special} "
         "Do not provide or request payment card details. Do not purchase anything. "
         "If the venue asks for payment, say the traveler will follow up directly. "
         "After giving the booking details, tell the venue that the automated system will ask them "
@@ -634,10 +669,11 @@ def _booking_voice_summary(record: BookingCallRecord) -> str:
     if details is None:
         return "The booking details are unavailable."
     special = f" Special requests: {details.special_requests}." if details.special_requests else ""
+    callback = f" Callback number {details.callback_phone}." if details.callback_phone else ""
     return (
         f"Booking request for {details.venue_name}: {details.reservation_datetime}, "
         f"party of {details.party_size}, under {details.reservation_name}. "
-        f"Callback number {details.callback_phone}.{special}"
+        f"{callback}{special}"
     )
 
 
