@@ -57,6 +57,13 @@ from app.services.planning import (
     PlanningWorkflowError,
     sanitize_agent_message,
 )
+from app.services.stripe_commerce import (
+    ProviderCheckoutRequest,
+    ProviderCheckoutResponse,
+    ProviderCommerceService,
+    ProviderPackageSearchRequest,
+    ProviderPackageSearchResponse,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -423,6 +430,60 @@ def chat_with_itinerary_agent(
         agent_message=agent_message or "I can only help with adding activities to this itinerary.",
         action=action or "rejected",
     )
+
+
+@router.post(
+    "/itineraries/{itinerary_id}/commerce/packages/search",
+    response_model=ProviderPackageSearchResponse,
+)
+def search_activity_packages(
+    itinerary_id: str,
+    request: ProviderPackageSearchRequest,
+    current_user: VerifiedUser = Depends(get_current_user),
+    repositories: RepositoryBundle = Depends(get_repositories),
+) -> ProviderPackageSearchResponse:
+    logger.info(
+        "search_activity_packages user=%s itinerary_id=%s day=%s stop=%s",
+        current_user.uid,
+        itinerary_id,
+        request.day_index,
+        request.stop_index,
+    )
+    if request.itinerary_id != itinerary_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Request itinerary_id must match path itinerary_id.",
+        )
+    itinerary = _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
+    try:
+        return ProviderCommerceService().search_packages(request, itinerary=itinerary)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.post(
+    "/itineraries/{itinerary_id}/commerce/provider-checkout",
+    response_model=ProviderCheckoutResponse,
+)
+def prepare_provider_checkout(
+    itinerary_id: str,
+    request: ProviderCheckoutRequest,
+    current_user: VerifiedUser = Depends(get_current_user),
+    repositories: RepositoryBundle = Depends(get_repositories),
+) -> ProviderCheckoutResponse:
+    logger.info(
+        "prepare_provider_checkout user=%s itinerary_id=%s package_id=%s",
+        current_user.uid,
+        itinerary_id,
+        request.package_id,
+    )
+    _require_owned_itinerary(itinerary_id, current_user.uid, repositories)
+    try:
+        response = ProviderCommerceService().prepare_checkout(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    _audit(repositories, current_user.uid, "commerce.provider_checkout", "itinerary", itinerary_id)
+    return response
 
 
 @router.post(

@@ -48,14 +48,14 @@ class BookingDetails(BaseModel):
     reservation_datetime: str
     party_size: int = Field(ge=1, le=30)
     reservation_name: str = Field(min_length=1, max_length=120)
-    callback_phone: str | None = Field(default=None, min_length=5, max_length=40)
+    callback_phone: str = Field(min_length=5, max_length=40)
     special_requests: str | None = Field(default=None, max_length=500)
 
     @field_validator("callback_phone")
     @classmethod
-    def callback_phone_is_reasonable(cls, value: str | None) -> str | None:
-        if value is None or not value.strip():
-            return None
+    def callback_phone_is_reasonable(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("callback_phone is required")
         return _validate_reachable_phone(value, field_name="callback_phone")
 
     @field_validator("venue_phone")
@@ -555,12 +555,14 @@ def _missing_booking_fields(details: BookingDetails | None) -> list[str]:
             "reservation_datetime",
             "party_size",
             "reservation_name",
+            "callback_phone",
         ]
     missing: list[str] = []
     for field_name in [
         "reservation_datetime",
         "party_size",
         "reservation_name",
+        "callback_phone",
     ]:
         value = getattr(details, field_name)
         if value is None or (isinstance(value, str) and not value.strip()):
@@ -572,10 +574,10 @@ def _fallback_instructions(venue_name: str, details: BookingDetails | None) -> s
     if details is None:
         return (
             f"To book {venue_name}, contact the venue directly with your preferred date, time, "
-            "party size, reservation name, and any special requests."
+            "party size, reservation name, callback phone, and any special requests."
         )
     requests = f" Special requests: {details.special_requests}." if details.special_requests else ""
-    callback = f" Give callback number {details.callback_phone}." if details.callback_phone else ""
+    callback = f" Give callback number {details.callback_phone}."
     return (
         f"To book {venue_name}, ask for a reservation on {details.reservation_datetime} "
         f"for {details.party_size} under {details.reservation_name}. "
@@ -650,7 +652,7 @@ def _booking_voice_instruction(record: BookingCallRecord) -> str:
             "If details are missing, politely end the call and ask the user to use chat instructions."
         )
     special = f" Special requests: {details.special_requests}." if details.special_requests else ""
-    callback = f" Give callback number {details.callback_phone}." if details.callback_phone else ""
+    callback = f" Give callback number {details.callback_phone}."
     return (
         "You are an AI booking assistant calling a venue on behalf of a traveler. "
         "Immediately disclose that you are an AI assistant calling for the traveler. "
@@ -669,7 +671,7 @@ def _booking_voice_summary(record: BookingCallRecord) -> str:
     if details is None:
         return "The booking details are unavailable."
     special = f" Special requests: {details.special_requests}." if details.special_requests else ""
-    callback = f" Callback number {details.callback_phone}." if details.callback_phone else ""
+    callback = f" Callback number {details.callback_phone}."
     return (
         f"Booking request for {details.venue_name}: {details.reservation_datetime}, "
         f"party of {details.party_size}, under {details.reservation_name}. "

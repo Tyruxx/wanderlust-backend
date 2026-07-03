@@ -28,7 +28,7 @@ class AskAnythingRouter:
     """Routes broad activity questions without performing side effects."""
 
     _booking_terms = ("book", "booking", "reservation", "reserve", "call")
-    _purchase_terms = ("buy", "purchase", "ticket", "pay", "package", "stripe")
+    _purchase_terms = ("buy", "purchase", "ticket", "pay", "package", "checkout")
 
     def classify(self, request: AskAnythingRequest) -> AskAnythingResponse:
         message = request.message.lower()
@@ -41,8 +41,8 @@ class AskAnythingRouter:
         if any(term in message for term in self._purchase_terms):
             return AskAnythingResponse(
                 intent=AskAnythingIntent.PURCHASE,
-                agent_message="This sounds like a purchase request.",
-                suggested_destination=ActivityActionDestination.PURCHASE_WITH_STRIPE,
+                agent_message="This sounds like a package or checkout request.",
+                suggested_destination=ActivityActionDestination.BOOK_OR_BUY_PACKAGES,
             )
         return AskAnythingResponse(
             intent=AskAnythingIntent.INFORMATIONAL,

@@ -104,7 +104,7 @@ def test_booking_call_logs_are_redacted(monkeypatch) -> None:
         itinerary=_itinerary(),
         day_index=0,
         stop_index=0,
-        details=_details_without_callback(),
+        details=_details(),
         confirmed=True,
     )
     service.update_twilio_status(call_sid="CA1234567890", status="ringing")
@@ -137,16 +137,6 @@ def _details() -> BookingDetails:
         party_size=2,
         reservation_name="Ada",
         callback_phone="+15550001111",
-    )
-
-
-def _details_without_callback() -> BookingDetails:
-    return BookingDetails(
-        venue_name="Test Venue",
-        venue_phone="+15551234567",
-        reservation_datetime="tomorrow at 7pm",
-        party_size=2,
-        reservation_name="Ada",
     )
 
 

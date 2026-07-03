@@ -241,6 +241,48 @@ class ApiRouteTests(unittest.TestCase):
         self.assertIsNone(body["details"])
         self.assertIn("Colosseum", body["fallback_instructions"])
 
+    def test_activity_package_search_and_provider_checkout_are_guarded(self) -> None:
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(user_id="user-1", version=2, onboarding_required=False),
+        )
+        itinerary = self.client.post("/v1/itineraries", json=chat_itinerary_payload()).json()
+
+        search = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/commerce/packages/search",
+            json={
+                "itinerary_id": itinerary["id"],
+                "day_index": 0,
+                "stop_index": 0,
+                "query": "family ticket",
+            },
+        )
+
+        self.assertEqual(search.status_code, 200)
+        result = search.json()
+        self.assertEqual(result["activity_name"], "Colosseum")
+        self.assertEqual(len(result["results"]), 5)
+        self.assertTrue(result["results"][0]["checkout_url"].startswith("https://"))
+
+        checkout_payload = {
+            "package_id": result["results"][0]["package_id"],
+            "checkout_url": result["results"][0]["checkout_url"],
+            "confirmed": False,
+        }
+        rejected = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/commerce/provider-checkout",
+            json=checkout_payload,
+        )
+        self.assertEqual(rejected.status_code, 400)
+
+        checkout_payload["confirmed"] = True
+        checkout = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/commerce/provider-checkout",
+            json=checkout_payload,
+        )
+        self.assertEqual(checkout.status_code, 200)
+        self.assertEqual(checkout.json()["checkout_url"], result["results"][0]["checkout_url"])
+
     def test_start_requires_replacement_confirmation_then_switches_active_itinerary(self) -> None:
         self.preferences.create(
             "user-1",

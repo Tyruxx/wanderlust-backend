@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 class ActivityActionDestination(str, Enum):
     CALL_VENUE = "call_venue"
-    PURCHASE_WITH_STRIPE = "purchase_with_stripe"
+    BOOK_OR_BUY_PACKAGES = "book_or_buy_packages"
     ASK_AGENT_ANYTHING = "ask_agent_anything"
 
 
@@ -39,9 +39,11 @@ class ActivityActionsService:
                 description=f"Book or prepare a manual call for {venue}.",
             ),
             ActivityActionOption(
-                destination=ActivityActionDestination.PURCHASE_WITH_STRIPE,
-                label="Purchase with Stripe",
-                description="Find relevant tickets, packages, or products using verified Stripe data.",
+                destination=ActivityActionDestination.BOOK_OR_BUY_PACKAGES,
+                label="Book or Buy Packages",
+                description=(
+                    "Find activity-scoped tickets, packages, or products from verified providers."
+                ),
             ),
             ActivityActionOption(
                 destination=ActivityActionDestination.ASK_AGENT_ANYTHING,
