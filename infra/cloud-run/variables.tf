@@ -45,18 +45,18 @@ variable "use_vertex_ai" {
 }
 
 variable "gemini_model" {
-  type        = string
-  default     = "gemini-2.5-flash"
+  type    = string
+  default = "gemini-2.5-flash"
 }
 
 variable "gemini_live_model" {
-  type        = string
-  default     = "gemini-3.1-flash-live-preview"
+  type    = string
+  default = "gemini-3.1-flash-live-preview"
 }
 
 variable "booking_call_max_seconds" {
-  type        = number
-  default     = 300
+  type    = number
+  default = 300
 }
 
 variable "public_backend_base_url" {
