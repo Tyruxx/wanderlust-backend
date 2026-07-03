@@ -130,6 +130,7 @@ class BookingCallService:
         self.call_log_repository = call_log_repository or build_call_log_repository()
         self._records: dict[str, BookingCallRecord] = {}
         self._stream_contexts: dict[str, _LiveCallContext] = {}
+        self._status_subscribers: dict[str, set[WebSocket]] = {}
 
     def create_offer(
         self,
@@ -313,6 +314,36 @@ class BookingCallService:
             return scrubbed
         return _public_record(record)
 
+    def subscribe_status(self, call_id: str, user_id: str, websocket: WebSocket) -> bool:
+        record = self._records.get(call_id)
+        if record is None or record.user_id != user_id:
+            return False
+        self._status_subscribers.setdefault(call_id, set()).add(websocket)
+        return True
+
+    def unsubscribe_status(self, call_id: str, websocket: WebSocket) -> None:
+        subs = self._status_subscribers.get(call_id)
+        if subs:
+            subs.discard(websocket)
+            if not subs:
+                self._status_subscribers.pop(call_id, None)
+
+    def _push_status_update(self, call_id: str) -> None:
+        record = self._records.get(call_id)
+        if record is None:
+            return
+        message = json.dumps({
+            "type": "status_update",
+            "status": record.status.value,
+            "result_summary": record.result_summary,
+            "fallback_instructions": record.fallback_instructions,
+        })
+        for ws in list(self._status_subscribers.get(call_id, set())):
+            try:
+                asyncio.ensure_future(ws.send_text(message))
+            except Exception:
+                self.unsubscribe_status(call_id, ws)
+
     def twiml_for_token(self, stream_token: str) -> str:
         settings = get_settings()
         public_base = settings.public_backend_base_url.rstrip("/")
@@ -345,6 +376,7 @@ class BookingCallService:
                 record.result_summary = record.result_summary or _terminal_summary(mapped)
                 self._records[record.call_id] = _scrub_record(record)
             self._log_call_record(record)
+            self._push_status_update(record.call_id)
             return
 
     def handle_voice_menu_choice(self, *, stream_token: str, digits: str | None) -> str:
@@ -363,6 +395,7 @@ class BookingCallService:
             record.updated_at = _utc_now()
             self._records[record.call_id] = _scrub_record(record)
             self._log_call_record(record)
+            self._push_status_update(record.call_id)
             self._stream_contexts.pop(stream_token, None)
             return (
                 '<?xml version="1.0" encoding="UTF-8"?>'
@@ -396,6 +429,7 @@ class BookingCallService:
         context.record.status = BookingCallStatus.IN_PROGRESS
         context.record.updated_at = _utc_now()
         self._records[context.record.call_id] = _public_record(context.record)
+        self._push_status_update(context.record.call_id)
         bridge = GeminiLiveTwilioBridge(context)
         try:
             await bridge.run(websocket)
@@ -419,6 +453,7 @@ class BookingCallService:
             }:
                 self._stream_contexts.pop(stream_token, None)
             self._log_call_record(context.record)
+            self._push_status_update(context.record.call_id)
             await _safe_close(websocket)
 
     def _lookup_venue_phone(self, stop: PlaceStop, region: str) -> str | None:

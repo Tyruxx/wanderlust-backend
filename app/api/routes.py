@@ -1,7 +1,7 @@
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import Response
 
 from app.api.dependencies import (
@@ -659,6 +659,26 @@ async def booking_call_stream(
     stream_token: str,
 ) -> None:
     await get_booking_call_service().bridge_stream(websocket, stream_token)
+
+
+@router.websocket("/booking-calls/ws/{call_id}")
+async def booking_call_ws_status(
+    websocket: WebSocket,
+    call_id: str,
+    booking_service: BookingCallService = Depends(get_booking_service),
+) -> None:
+    await websocket.accept()
+    user_id = (websocket.headers.get("x-user-id") or "").strip()
+    if not user_id or not booking_service.subscribe_status(call_id, user_id, websocket):
+        await websocket.close(code=1008)
+        return
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        booking_service.unsubscribe_status(call_id, websocket)
 
 
 def _parse_duration(duration_str: str) -> int:
