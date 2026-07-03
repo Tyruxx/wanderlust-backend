@@ -19,6 +19,13 @@ gcloud services enable \
   firestore.googleapis.com \
   --project "${GOOGLE_CLOUD_PROJECT}"
 
+if ! gcloud iam service-accounts describe "${SERVICE_ACCOUNT_EMAIL}" \
+  --project "${GOOGLE_CLOUD_PROJECT}" >/dev/null 2>&1; then
+  gcloud iam service-accounts create "${CLOUD_RUN_SERVICE_ACCOUNT}" \
+    --project "${GOOGLE_CLOUD_PROJECT}" \
+    --display-name "Wanderlust Backend"
+fi
+
 if ! gcloud artifacts repositories describe "${ARTIFACT_REGISTRY_REPOSITORY}" \
   --project "${GOOGLE_CLOUD_PROJECT}" \
   --location "${GOOGLE_CLOUD_REGION}" >/dev/null 2>&1; then
@@ -32,13 +39,6 @@ gcloud projects add-iam-policy-binding "${GOOGLE_CLOUD_PROJECT}" \
   --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
   --role roles/datastore.user \
   >/dev/null
-
-if ! gcloud iam service-accounts describe "${SERVICE_ACCOUNT_EMAIL}" \
-  --project "${GOOGLE_CLOUD_PROJECT}" >/dev/null 2>&1; then
-  gcloud iam service-accounts create "${CLOUD_RUN_SERVICE_ACCOUNT}" \
-    --project "${GOOGLE_CLOUD_PROJECT}" \
-    --display-name "Wanderlust Backend"
-fi
 
 for SECRET_NAME in \
   google-api-key \

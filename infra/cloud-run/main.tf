@@ -16,6 +16,7 @@ resource "google_project_service" "required" {
   for_each = toset([
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
+    "firestore.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
   ])
@@ -39,6 +40,12 @@ resource "google_service_account" "backend" {
   display_name = "Wanderlust Backend"
 
   depends_on = [google_project_service.required]
+}
+
+resource "google_project_iam_member" "firestore_writer" {
+  project = var.project_id
+  role    = "roles/datastore.user"
+  member  = "serviceAccount:${google_service_account.backend.email}"
 }
 
 data "google_secret_manager_secret" "backend" {
@@ -127,6 +134,14 @@ resource "google_cloud_run_v2_service" "backend" {
         name  = "BOOKING_CALL_MAX_SECONDS"
         value = tostring(var.booking_call_max_seconds)
       }
+      env {
+        name  = "CALL_LOG_BACKEND"
+        value = var.call_log_backend
+      }
+      env {
+        name  = "CALL_LOG_COLLECTION"
+        value = var.call_log_collection
+      }
 
       dynamic "env" {
         for_each = {
@@ -140,7 +155,7 @@ resource "google_cloud_run_v2_service" "backend" {
         content {
           name = env.key
           value_source {
-              secret_key_ref {
+            secret_key_ref {
               secret  = data.google_secret_manager_secret.backend[env.value].secret_id
               version = "latest"
             }
@@ -150,7 +165,10 @@ resource "google_cloud_run_v2_service" "backend" {
     }
   }
 
-  depends_on = [google_secret_manager_secret_iam_member.backend_access]
+  depends_on = [
+    google_project_iam_member.firestore_writer,
+    google_secret_manager_secret_iam_member.backend_access,
+  ]
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public_invoker" {

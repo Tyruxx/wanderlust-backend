@@ -5,11 +5,13 @@ FastAPI backend for the Flutter app in `../smart_travel_itinerary_flutter`.
 Backend uses Google ADK 2.0 for agentic planning and active-itinerary workflows.
 Google Cloud is only required for external API calls (Gemini/Vertex AI, Gemini
 Google Search grounding, and Google Maps Platform).
-Backend runtime state is local SQLite only — no Firestore, no Pub/Sub, no
-Secret Manager. Flutter remains the local-first source of truth for traveler
-preferences and saved itineraries; backend requests use an `X-User-Id` device
-context header rather than an end-user identity provider. In the Flutter app
-this is an anonymous `anon_...` device ID generated once and stored locally.
+Backend runtime state is local SQLite by default. Flutter remains the
+local-first source of truth for traveler preferences and saved itineraries;
+backend requests use an `X-User-Id` device context header rather than an
+end-user identity provider. In the Flutter app this is an anonymous `anon_...`
+device ID generated once and stored locally. The production Cloud Run path uses
+Secret Manager for service credentials and may use Firestore only for minimal,
+redacted Twilio booking-call status logs.
 
 ## Local Setup
 
@@ -98,6 +100,12 @@ provided a custom domain. The current booking-call bridge keeps live call
 session state in process memory, so the deployment pins Cloud Run to one warm
 instance. Add external session storage before increasing max instances.
 
+Cloud call logging is enabled by default in Cloud Run with
+`CALL_LOG_BACKEND=firestore` and `CALL_LOG_COLLECTION=wanderlust_booking_call_logs`.
+The deploy script grants the runtime service account `roles/datastore.user`.
+Call logs must stay redacted: no raw callback phone, reservation name, venue
+hotline override, or full transcript should be stored.
+
 ### 3. Deploy With Terraform
 
 ```sh
@@ -144,6 +152,22 @@ WANDERLUST_RUN_TWILIO_E2E=1 \
 WANDERLUST_TWILIO_E2E_TO_NUMBER=+15551234567 \
 .venv/bin/python -m pytest tests/test_twilio_e2e.py
 ```
+
+For a manual Cloud Run smoke check:
+
+```sh
+CLOUD_RUN_URL="$(gcloud run services describe wanderlust-backend \
+  --project "$GOOGLE_CLOUD_PROJECT" \
+  --region "$GOOGLE_CLOUD_REGION" \
+  --format 'value(status.url)')"
+curl "$CLOUD_RUN_URL/readyz"
+```
+
+Twilio webhooks should use the same public base URL:
+
+- TwiML: `$CLOUD_RUN_URL/v1/booking-calls/twiml/{stream_token}`
+- Media Stream WSS: `wss://.../v1/booking-calls/stream/{stream_token}`
+- Status callback: `$CLOUD_RUN_URL/v1/booking-calls/twilio-status`
 
 ## Guardrails
 

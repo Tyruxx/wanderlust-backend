@@ -64,3 +64,15 @@ variable "public_backend_base_url" {
   description = "Optional custom domain. Leave blank to use the Cloud Run URL after a second apply."
   default     = ""
 }
+
+variable "call_log_backend" {
+  type        = string
+  description = "Call log backend for Cloud Run. Use firestore for redacted Twilio call status logs."
+  default     = "firestore"
+}
+
+variable "call_log_collection" {
+  type        = string
+  description = "Firestore collection for redacted Twilio call status logs."
+  default     = "wanderlust_booking_call_logs"
+}
