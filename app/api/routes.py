@@ -20,6 +20,7 @@ from app.api.schemas import (
     BookingCallCreateRequest,
     BookingCallStatusResponse,
     DeleteResponse,
+    DirectRouteRequest,
     DirectBookingCallCreateRequest,
     ExportRequestResponse,
     ItineraryCreateRequest,
@@ -248,34 +249,83 @@ def compute_itinerary_routes(
     if request.day_index < 0 or request.day_index >= len(itinerary.days):
         return RouteSegmentsResponse(segments=[], stop_coordinates=[])
 
-    day = itinerary.days[request.day_index]
+    requested_modes = request.modes or itinerary.brief.preferred_transport_modes or ["WALKING"]
+    response = _compute_route_segments_for_stops(
+        region=itinerary.brief.region,
+        stops=[
+            {"index": index, "name": stop.name, "lat": None, "lng": None}
+            for index, stop in enumerate(itinerary.days[request.day_index].stops)
+        ],
+        requested_modes=requested_modes,
+    )
+    logger.info(
+        "computed %d segments for %d stops",
+        len(response.segments),
+        len(response.stop_coordinates),
+    )
+    return response
+
+
+@router.post("/routes/compute", response_model=RouteSegmentsResponse)
+def compute_direct_routes(
+    request: DirectRouteRequest,
+    current_user: VerifiedUser = Depends(get_current_user),
+) -> RouteSegmentsResponse:
+    logger.info(
+        "compute_direct_routes user=%s stops=%d modes=%s",
+        current_user.uid,
+        len(request.stops),
+        request.modes,
+    )
+    return _compute_route_segments_for_stops(
+        region=request.region,
+        stops=[
+            {"index": index, "name": stop.name, "lat": stop.lat, "lng": stop.lng}
+            for index, stop in enumerate(request.stops)
+        ],
+        requested_modes=request.modes or ["WALKING"],
+    )
+
+
+def _compute_route_segments_for_stops(
+    *,
+    region: str,
+    stops: list[dict[str, object]],
+    requested_modes: list[str],
+) -> RouteSegmentsResponse:
     client = GoogleMapsClient()
     allowed_modes = {"WALKING", "DRIVING", "TRANSIT", "BICYCLING", "WALK", "DRIVE", "BICYCLE"}
-    requested_modes = request.modes or itinerary.brief.preferred_transport_modes or ["WALKING"]
     modes = [mode for mode in requested_modes if mode in allowed_modes]
     if not modes:
         modes = ["WALKING"]
 
-    # Geocode each stop name to get real coordinates
     stop_coords: list[StopCoordinateResult] = []
-    for i, stop in enumerate(day.stops):
+    for stop in stops:
+        index = int(stop["index"])
+        name = str(stop["name"])
+        lat = stop.get("lat")
+        lng = stop.get("lng")
+        if isinstance(lat, int | float) and isinstance(lng, int | float):
+            stop_coords.append(
+                StopCoordinateResult(index=index, name=name, lat=float(lat), lng=float(lng))
+            )
+            continue
         try:
-            coords = client.geocode(f"{stop.name}, {itinerary.brief.region}")
+            coords = client.geocode(f"{name}, {region}")
             if coords is not None:
                 stop_coords.append(
                     StopCoordinateResult(
-                        index=i,
-                        name=stop.name,
+                        index=index,
+                        name=name,
                         lat=coords.latitude,
                         lng=coords.longitude,
                     )
                 )
             else:
-                logger.warning("geocode returned None for stop=%s", stop.name)
+                logger.warning("geocode returned None for stop=%s", name)
         except Exception as exc:
-            logger.warning("geocode failed for stop=%s: %s", stop.name, exc)
+            logger.warning("geocode failed for stop=%s: %s", name, exc)
 
-    # Compute routes between real coordinates for each mode
     segments: list[RouteSegmentSchema] = []
     for i in range(len(stop_coords) - 1):
         origin = Coordinates(latitude=stop_coords[i].lat, longitude=stop_coords[i].lng)
@@ -311,7 +361,6 @@ def compute_itinerary_routes(
                 logger.warning("compute_route failed %s->%s mode=%s: %s", i, i + 1, mode, exc)
                 continue
 
-    logger.info("computed %d segments for %d stops", len(segments), len(stop_coords))
     return RouteSegmentsResponse(segments=segments, stop_coordinates=stop_coords)
 
 

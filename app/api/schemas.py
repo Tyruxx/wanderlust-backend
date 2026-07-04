@@ -117,6 +117,18 @@ class RouteRequest(BaseModel):
     modes: list[str] = Field(default_factory=list, max_length=4)
 
 
+class DirectRouteStopRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
+
+
+class DirectRouteRequest(BaseModel):
+    region: str = Field(min_length=1, max_length=160)
+    stops: list[DirectRouteStopRequest] = Field(min_length=2, max_length=30)
+    modes: list[str] = Field(default_factory=list, max_length=4)
+
+
 class RouteSegmentSchema(BaseModel):
     from_stop_index: int
     to_stop_index: int

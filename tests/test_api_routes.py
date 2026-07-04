@@ -34,6 +34,7 @@ from app.services.active_events import ActiveEventWorkflowService
 from app.services.auth import VerifiedUser
 from app.services.booking_calls import BookingCallService
 from app.core.settings import get_settings
+from app.services.maps import Coordinates
 from app.services.repositories import AuditLogEntry
 from app.services.planning import PlanningResult
 
@@ -333,6 +334,26 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(checkout.status_code, 200)
         self.assertEqual(checkout.json()["checkout_url"], result["results"][0]["checkout_url"])
 
+    def test_direct_route_compute_supports_local_only_itinerary_stops(self) -> None:
+        with patch("app.api.routes.GoogleMapsClient", lambda: FakeRouteMapsClient()):
+            response = self.client.post(
+                "/v1/routes/compute",
+                json={
+                    "region": "Singapore",
+                    "modes": ["WALKING"],
+                    "stops": [
+                        {"name": "Singapore Zoo"},
+                        {"name": "River Wonders"},
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["stop_coordinates"]), 2)
+        self.assertEqual(len(body["segments"]), 1)
+        self.assertEqual(body["segments"][0]["encoded_polyline"], "encoded-google-route")
+
     def test_ask_anything_routes_to_call_or_package_ctas_without_side_effects(self) -> None:
         self.preferences.create(
             "user-1",
@@ -569,6 +590,30 @@ class FakePublisher:
 class FakeBookingMapsClient:
     def find_phone_number(self, query: str, *, region: str = "") -> str | None:
         return "+15551234567"
+
+
+class FakeRouteMapsClient:
+    def geocode(self, query: str) -> Coordinates | None:
+        if "Singapore Zoo" in query:
+            return Coordinates(latitude=1.4043, longitude=103.7930)
+        return Coordinates(latitude=1.4049, longitude=103.7907)
+
+    def compute_route(
+        self,
+        *,
+        origin: Coordinates,
+        destination: Coordinates,
+        travel_mode: str = "WALK",
+    ) -> dict[str, object]:
+        return {
+            "routes": [
+                {
+                    "duration": "540s",
+                    "distanceMeters": 900,
+                    "polyline": {"encodedPolyline": "encoded-google-route"},
+                }
+            ]
+        }
 
 
 class FakeTimingChatAgent:
