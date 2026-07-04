@@ -330,6 +330,14 @@ class BookingCallService:
                 self._status_subscribers.pop(call_id, None)
 
     def _push_status_update(self, call_id: str) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self._send_status_update(call_id))
+            return
+        loop.create_task(self._send_status_update(call_id))
+
+    async def _send_status_update(self, call_id: str) -> None:
         record = self._records.get(call_id)
         if record is None:
             return
@@ -341,7 +349,7 @@ class BookingCallService:
         })
         for ws in list(self._status_subscribers.get(call_id, set())):
             try:
-                asyncio.ensure_future(ws.send_text(message))
+                await ws.send_text(message)
             except Exception:
                 self.unsubscribe_status(call_id, ws)
 

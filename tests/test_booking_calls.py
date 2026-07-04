@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import json
+
 import pytest
 
 from app.core.settings import get_settings
@@ -16,6 +19,14 @@ class FakeBookingCallService(BookingCallService):
     def _create_twilio_call(self, *, to_number: str, stream_token: str) -> str:
         self.stream_token = stream_token
         return "CA1234567890"
+
+
+class FakeStatusWebSocket:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def send_text(self, message: str) -> None:
+        self.messages.append(message)
 
 
 @pytest.fixture(autouse=True)
@@ -91,6 +102,29 @@ def test_twilio_completed_without_keypad_confirmation_is_failed(monkeypatch) -> 
     assert status.status == BookingCallStatus.FAILED
     assert status.details is None
     assert "before the venue confirmed receipt" in (status.result_summary or "")
+
+
+async def test_twilio_status_updates_are_pushed_to_subscribed_websocket(monkeypatch) -> None:
+    _configure_call_env(monkeypatch)
+    service = FakeBookingCallService()
+    websocket = FakeStatusWebSocket()
+
+    record = service.start_call(
+        user_id="user-1",
+        itinerary=_itinerary(),
+        day_index=0,
+        stop_index=0,
+        details=_details(),
+        confirmed=True,
+    )
+
+    assert service.subscribe_status(record.call_id, "user-1", websocket) is True
+    service.update_twilio_status(call_sid="CA1234567890", status="ringing")
+    await asyncio.sleep(0)
+
+    pushed = [json.loads(message) for message in websocket.messages]
+    assert pushed[-1]["type"] == "status_update"
+    assert pushed[-1]["status"] == BookingCallStatus.RINGING
 
 
 def test_booking_call_logs_are_redacted(monkeypatch) -> None:
