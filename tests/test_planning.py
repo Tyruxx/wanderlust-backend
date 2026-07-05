@@ -453,6 +453,7 @@ class PlanningWorkflowTests(unittest.TestCase):
         self.assertIn(offer["action"], {"booking_call_offer", "booking_info"})
         self.assertEqual(offer["booking_call_offer"].details.reservation_name, "Ada")
         self.assertEqual(offer["booking_call_offer"].details.venue_phone, "+15551234567")
+        self.assertIn(" at 7 PM", offer["booking_call_offer"].details.reservation_datetime)
 
     def test_chat_booking_request_extracts_labeled_conversation_details(self) -> None:
         itinerary = _chat_itinerary()
@@ -462,7 +463,7 @@ class PlanningWorkflowTests(unittest.TestCase):
         )
 
         result = service.process_message(
-            "date/time: tomorrow, party size: 2 people, reservation name: Benjamin, "
+            "date/time: tomorrow at 1 pm, party size: 2 people, reservation name: Benjamin, "
             "callback phone: +6512345678. This restaurant phone number has been "
             "changed to +6580241976 recently, so call this number instead",
             itinerary,
@@ -472,11 +473,30 @@ class PlanningWorkflowTests(unittest.TestCase):
 
         offer = result["booking_call_offer"]
         self.assertEqual(offer.missing_fields, [])
-        self.assertEqual(offer.details.reservation_datetime, "tomorrow")
+        self.assertIn(" at 1 PM", offer.details.reservation_datetime)
         self.assertEqual(offer.details.party_size, 2)
         self.assertEqual(offer.details.reservation_name, "Benjamin")
         self.assertEqual(offer.details.callback_phone, "+6512345678")
         self.assertEqual(offer.details.venue_phone, "+6580241976")
+
+    def test_chat_booking_request_reasks_for_invalid_or_incomplete_datetime(self) -> None:
+        itinerary = _chat_itinerary()
+        service = ChatAgentService()
+        service.booking_service = BookingCallService(
+            maps_client=FakeBookingMapsClient(),  # type: ignore[arg-type]
+        )
+
+        result = service.process_message(
+            "date/time: 2000-01-01 19:00, party size: 2 people, reservation name: Benjamin, "
+            "callback phone: +6512345678",
+            itinerary,
+            day_index=0,
+            target_stop_index=0,
+        )
+
+        offer = result["booking_call_offer"]
+        self.assertEqual(result["action"], "booking_info")
+        self.assertIn("reservation_datetime", offer.missing_fields)
 
     def test_chat_booking_request_accepts_explicit_hotline_override(self) -> None:
         itinerary = _chat_itinerary()

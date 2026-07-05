@@ -15,6 +15,8 @@ from app.services.booking_intake import (
     BOOKING_INTAKE_ORDER,
     BookingIntakeField,
     BookingIntakeState,
+    format_readable_datetime,
+    parse_natural_datetime,
     validate_future_datetime,
 )
 from app.services.manual_call import ManualCallRequest, ManualCallService
@@ -63,6 +65,16 @@ def test_booking_intake_order_and_future_datetime_validation() -> None:
     assert validate_future_datetime(future).valid is True
     assert validate_future_datetime(past).valid is False
     assert validate_future_datetime(None).valid is False
+
+    parsed = parse_natural_datetime(
+        "next Friday at 7:30 pm",
+        now=datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc),
+    )
+    assert parsed is not None
+    assert parsed.year == 2026
+    assert parsed.hour == 19
+    assert parsed.minute == 30
+    assert "Friday" in format_readable_datetime(parsed)
 
 
 def test_manual_call_service_can_prepare_script_without_contact() -> None:

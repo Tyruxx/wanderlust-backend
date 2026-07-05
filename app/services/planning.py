@@ -27,6 +27,11 @@ from app.domain.models import (
 )
 from app.services.agentic.workflows import WanderlustADKWorkflows, build_wanderlust_adk_workflows
 from app.services.booking_calls import BookingCallService, BookingDetails
+from app.services.booking_intake import (
+    format_readable_datetime,
+    parse_natural_datetime,
+    validate_future_datetime,
+)
 from app.services.guardrails import RecommendationGuardrailService
 from app.services.maps import CandidatePlace, GoogleMapsClient, MapsIntegrationError
 
@@ -1210,13 +1215,20 @@ def _extract_booking_datetime(message: str) -> str | None:
         ),
     )
     if labeled:
-        return labeled[:120]
+        return _validated_readable_booking_datetime(labeled)
     match = re.search(
         r"\b((?:today|tomorrow|tonight|next\s+[A-Za-z]+|on\s+[A-Za-z0-9, ]+)(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b",
         message,
         re.I,
     )
-    return match.group(1).strip()[:120] if match else None
+    return _validated_readable_booking_datetime(match.group(1)) if match else None
+
+
+def _validated_readable_booking_datetime(value: str) -> str | None:
+    parsed = parse_natural_datetime(value)
+    if validate_future_datetime(parsed).valid is not True or parsed is None:
+        return None
+    return format_readable_datetime(parsed)[:120]
 
 
 def _extract_party_size(message: str) -> int | None:
