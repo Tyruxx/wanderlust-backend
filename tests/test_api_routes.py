@@ -261,6 +261,100 @@ class ApiRouteTests(unittest.TestCase):
         self.assertIsNone(body["details"])
         self.assertIn("Colosseum", body["fallback_instructions"])
 
+    def test_booking_call_websocket_receives_simulated_twilio_statuses(self) -> None:
+        self._configure_call_env()
+        booking_service = FakeApiBookingCallService()
+        app.dependency_overrides[get_booking_service] = lambda: booking_service
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(user_id="user-1", version=2, onboarding_required=False),
+        )
+        itinerary = self.client.post("/v1/itineraries", json=chat_itinerary_payload()).json()
+        payload = {
+            "day_index": 0,
+            "stop_index": 0,
+            "confirmed": True,
+            "details": {
+                "venue_name": "Colosseum",
+                "venue_phone": "+15551234567",
+                "reservation_datetime": "Monday, July 6, 2026 at 7 PM",
+                "party_size": 2,
+                "reservation_name": "Ada",
+                "callback_phone": "+15550001111",
+            },
+        }
+
+        started = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/booking-calls",
+            json=payload,
+        )
+        self.assertEqual(started.status_code, 200)
+        call = started.json()["call"]
+        self.assertEqual(call["status"], "queued")
+
+        with self.client.websocket_connect(
+            f"/v1/booking-calls/ws/{call['call_id']}",
+            headers={"X-User-Id": "user-1"},
+        ) as websocket:
+            self.assertEqual(websocket.receive_json()["status"], "queued")
+            for twilio_status, expected in (
+                ("ringing", "ringing"),
+                ("in-progress", "in_progress"),
+            ):
+                response = self.client.post(
+                    "/v1/booking-calls/twilio-status",
+                    data={"CallSid": "CA1234567890", "CallStatus": twilio_status},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(websocket.receive_json()["status"], expected)
+
+            self.assertIsNotNone(booking_service.stream_token)
+            response = self.client.post(
+                f"/v1/booking-calls/voice-menu/{booking_service.stream_token}",
+                data={"Digits": "2"},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(websocket.receive_json()["status"], "booked")
+
+    def test_booking_call_websocket_reports_failed_when_completed_without_confirmation(self) -> None:
+        self._configure_call_env()
+        booking_service = FakeApiBookingCallService()
+        app.dependency_overrides[get_booking_service] = lambda: booking_service
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(user_id="user-1", version=2, onboarding_required=False),
+        )
+        itinerary = self.client.post("/v1/itineraries", json=chat_itinerary_payload()).json()
+        started = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/booking-calls",
+            json={
+                "day_index": 0,
+                "stop_index": 0,
+                "confirmed": True,
+                "details": {
+                    "venue_name": "Colosseum",
+                    "venue_phone": "+15551234567",
+                    "reservation_datetime": "Monday, July 6, 2026 at 7 PM",
+                    "party_size": 2,
+                    "reservation_name": "Ada",
+                    "callback_phone": "+15550001111",
+                },
+            },
+        )
+        call = started.json()["call"]
+
+        with self.client.websocket_connect(
+            f"/v1/booking-calls/ws/{call['call_id']}",
+            headers={"X-User-Id": "user-1"},
+        ) as websocket:
+            self.assertEqual(websocket.receive_json()["status"], "queued")
+            response = self.client.post(
+                "/v1/booking-calls/twilio-status",
+                data={"CallSid": "CA1234567890", "CallStatus": "completed"},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(websocket.receive_json()["status"], "failed")
+
     def test_direct_booking_call_does_not_require_cloud_itinerary_copy(self) -> None:
         payload = {
             "itinerary_id": "local-only-itinerary",
@@ -291,6 +385,14 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(body["venue_name"], "Bakmi Nikmat Rasa")
         self.assertEqual(body["status"], "fallback_required")
         self.assertIsNone(body["details"])
+
+    def _configure_call_env(self) -> None:
+        os.environ["TWILIO_ACCOUNT_SID"] = "AC123"
+        os.environ["TWILIO_AUTH_TOKEN"] = "token"
+        os.environ["TWILIO_FROM_NUMBER"] = "+15551230000"
+        os.environ["PUBLIC_BACKEND_BASE_URL"] = "https://wanderlust.example"
+        os.environ["GOOGLE_API_KEY"] = "test-google-key"
+        get_settings.cache_clear()
 
     def test_activity_package_search_and_provider_checkout_are_guarded(self) -> None:
         self.preferences.create(
@@ -590,6 +692,16 @@ class FakePublisher:
 class FakeBookingMapsClient:
     def find_phone_number(self, query: str, *, region: str = "") -> str | None:
         return "+15551234567"
+
+
+class FakeApiBookingCallService(BookingCallService):
+    def __init__(self) -> None:
+        super().__init__(maps_client=FakeBookingMapsClient())  # type: ignore[arg-type]
+        self.stream_token: str | None = None
+
+    def _create_twilio_call(self, *, to_number: str, stream_token: str) -> str:
+        self.stream_token = stream_token
+        return "CA1234567890"
 
 
 class FakeRouteMapsClient:
