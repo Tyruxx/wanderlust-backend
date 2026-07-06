@@ -147,6 +147,11 @@ class FakeSearchClient:
         ]
 
 
+class NoopSearchClient:
+    def search(self, *, agent_name, brief, preferences, focus, max_candidates=4):
+        return []
+
+
 class FakeBookingMapsClient:
     def find_phone_number(self, query: str, *, region: str = "") -> str | None:
         return "+15551234567"
@@ -175,6 +180,7 @@ class PlanningWorkflowTests(unittest.TestCase):
         service = ADKPlanningWorkflowService(
             maps_client=FakeMapsClient(),  # type: ignore[arg-type]
             planner_client=FakePlannerClient(),
+            search_client=NoopSearchClient(),  # type: ignore[arg-type]
         )
 
         result = service.generate_itinerary(
@@ -210,6 +216,7 @@ class PlanningWorkflowTests(unittest.TestCase):
         service = ADKPlanningWorkflowService(
             maps_client=FakeMapsClient(),  # type: ignore[arg-type]
             planner_client=FakePlannerClient(),
+            search_client=NoopSearchClient(),  # type: ignore[arg-type]
         )
 
         result = service.generate_itinerary(
@@ -577,6 +584,7 @@ class PlanningWorkflowTests(unittest.TestCase):
         service = ADKPlanningWorkflowService(
             maps_client=FakeMapsClient(),  # type: ignore[arg-type]
             planner_client=SocialOnlyLowConfidencePlannerClient(),
+            search_client=NoopSearchClient(),  # type: ignore[arg-type]
         )
 
         result = service.generate_itinerary(
