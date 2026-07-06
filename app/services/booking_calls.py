@@ -33,6 +33,7 @@ from app.services.call_logs import (
 )
 from app.services.guardrails import ActionGuardrailService
 from app.services.maps import GoogleMapsClient, MapsIntegrationError
+from app.services.agentic.workflows import build_wanderlust_adk_workflows
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,17 @@ class BookingCallRecord(BaseModel):
     created_at: str
     updated_at: str
     details: BookingDetails | None = None
+    selected_language: str = "English"
+    fallback_language: str = "English"
+    language_confidence: str = "low"
+    language_rationale: str = "Defaulted to English."
+
+
+class BookingCallLanguageSelection(BaseModel):
+    selected_language: str = "English"
+    fallback_language: str = "English"
+    confidence: str = "low"
+    rationale: str = "Defaulted to English."
 
 
 @dataclass
@@ -223,6 +235,10 @@ class BookingCallService:
             details=details,
         )
         now = _utc_now()
+        language = self._resolve_call_language(
+            venue_name=offer.venue_name,
+            region=itinerary.brief.region,
+        )
         record = BookingCallRecord(
             call_id=f"booking-call-{uuid4().hex}",
             offer_id=offer.offer_id,
@@ -237,6 +253,10 @@ class BookingCallService:
             created_at=now,
             updated_at=now,
             details=offer.details,
+            selected_language=language.selected_language,
+            fallback_language=language.fallback_language,
+            language_confidence=language.confidence,
+            language_rationale=language.rationale,
         )
         if not offer.can_call or offer.details is None or not offer.details.venue_phone:
             self._records[record.call_id] = _scrub_record(record)
@@ -472,6 +492,30 @@ class BookingCallService:
             raise
         except Exception:
             return None
+
+    def _resolve_call_language(self, *, venue_name: str, region: str) -> BookingCallLanguageSelection:
+        workflows = build_wanderlust_adk_workflows(get_settings().gemini_model)
+        text = f"{venue_name} {region}".lower()
+        language = _language_for_location_text(text)
+        if language is None:
+            return BookingCallLanguageSelection(
+                selected_language="English",
+                fallback_language="English",
+                confidence="low",
+                rationale=(
+                    f"{workflows.booking_locale_resolver.name} could not infer a local "
+                    "language confidently from venue and region context."
+                ),
+            )
+        return BookingCallLanguageSelection(
+            selected_language=language,
+            fallback_language="English",
+            confidence="medium",
+            rationale=(
+                f"{workflows.booking_locale_resolver.name} inferred {language} "
+                "from venue and region context."
+            ),
+        )
 
     def _create_twilio_call(self, *, to_number: str, stream_token: str) -> str:
         settings = get_settings()
@@ -780,9 +824,16 @@ def _booking_voice_instruction(record: BookingCallRecord) -> str:
         )
     special = f" Special requests: {details.special_requests}." if details.special_requests else ""
     callback = f" Give callback number {details.callback_phone}."
+    language_guidance = (
+        f"Speak primarily in {record.selected_language}. "
+        f"If the venue does not understand, fall back to {record.fallback_language}. "
+        f"Language selection confidence: {record.language_confidence}. "
+        f"Rationale: {record.language_rationale} "
+    )
     return (
         "You are an AI booking assistant calling a venue on behalf of a traveler. "
         "Immediately disclose that you are an AI assistant calling for the traveler. "
+        f"{language_guidance}"
         f"Request a reservation at {details.venue_name} for {details.reservation_datetime}, "
         f"party of {details.party_size}, under {details.reservation_name}. "
         f"{callback}{special} "
@@ -802,8 +853,34 @@ def _booking_voice_summary(record: BookingCallRecord) -> str:
     return (
         f"Booking request for {details.venue_name}: {details.reservation_datetime}, "
         f"party of {details.party_size}, under {details.reservation_name}. "
-        f"{callback}{special}"
+        f"{callback}{special} Use {record.selected_language}, falling back to "
+        f"{record.fallback_language} if needed."
     )
+
+
+def _language_for_location_text(text: str) -> str | None:
+    language_markers = [
+        (("japan", "tokyo", "kyoto", "osaka", "sapporo", "fukuoka"), "Japanese"),
+        (("indonesia", "jakarta", "bali", "bandung", "surabaya"), "Indonesian"),
+        (("italy", "rome", "milan", "florence", "venice", "naples"), "Italian"),
+        (("france", "paris", "lyon", "marseille", "nice"), "French"),
+        (("spain", "barcelona", "madrid", "seville", "valencia"), "Spanish"),
+        (("germany", "berlin", "munich", "hamburg", "frankfurt"), "German"),
+        (("korea", "seoul", "busan"), "Korean"),
+        (("china", "beijing", "shanghai", "guangzhou", "shenzhen"), "Mandarin Chinese"),
+        (("taiwan", "taipei"), "Mandarin Chinese"),
+        (("hong kong",), "Cantonese"),
+        (("thailand", "bangkok", "phuket", "chiang mai"), "Thai"),
+        (("vietnam", "hanoi", "ho chi minh", "da nang"), "Vietnamese"),
+        (("singapore",), "English"),
+        (("united states", "new york", "san francisco", "los angeles"), "English"),
+        (("united kingdom", "london", "manchester"), "English"),
+        (("australia", "sydney", "melbourne"), "English"),
+    ]
+    for markers, language in language_markers:
+        if any(marker in text for marker in markers):
+            return language
+    return None
 
 
 async def _safe_close(websocket: WebSocket) -> None:

@@ -508,7 +508,11 @@ def ask_agent_anything(
         )
     stop = day.stops[request.stop_index]
     routed = AskAnythingRouter().classify(
-        AskAnythingRequest(message=request.message, venue_name=stop.name)
+        AskAnythingRequest(
+            message=request.message,
+            venue_name=stop.name,
+            region=itinerary.brief.region,
+        )
     )
     _audit(repositories, current_user.uid, "ask_anything.classify", "itinerary", itinerary.id)
     return AskAnythingActivityResponse(

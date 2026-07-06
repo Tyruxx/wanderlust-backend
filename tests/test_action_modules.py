@@ -11,6 +11,7 @@ from app.services.actions import (
     ActivityActionsService,
 )
 from app.services.ask_anything import AskAnythingIntent, AskAnythingRequest, AskAnythingRouter
+from app.services.booking_calls import BookingCallService
 from app.services.booking_intake import (
     BOOKING_INTAKE_ORDER,
     BookingIntakeField,
@@ -21,6 +22,8 @@ from app.services.booking_intake import (
 )
 from app.services.manual_call import ManualCallRequest, ManualCallService
 from app.services.stripe_commerce import (
+    AgenticProviderPackageCandidate,
+    AgenticProviderPackageOutput,
     ProviderCheckoutRequest,
     ProviderPackageSearchRequest,
     StripeCommerceService,
@@ -93,7 +96,7 @@ def test_manual_call_service_can_prepare_script_without_contact() -> None:
 
 
 def test_ask_anything_routes_booking_and_purchase_without_side_effects() -> None:
-    router = AskAnythingRouter()
+    router = AskAnythingRouter(agent_client=FailingAskClient())
 
     booking = router.classify(
         AskAnythingRequest(message="Can you book a table?", venue_name="Test Venue")
@@ -108,6 +111,22 @@ def test_ask_anything_routes_booking_and_purchase_without_side_effects() -> None
     assert purchase.suggested_destination == ActivityActionDestination.BOOK_OR_BUY_PACKAGES
 
 
+def test_ask_anything_uses_agentic_answer_for_informational_request() -> None:
+    router = AskAnythingRouter(agent_client=FakeAskClient())
+
+    answer = router.classify(
+        AskAnythingRequest(
+            message="What should I notice when I visit?",
+            venue_name="National Gallery Singapore",
+            region="Singapore",
+        )
+    )
+
+    assert answer.intent == AskAnythingIntent.INFORMATIONAL
+    assert "National Gallery Singapore" in answer.agent_message
+    assert answer.suggested_destination is None
+
+
 def test_provider_commerce_requires_confirmation_and_never_exposes_secret_to_flutter() -> None:
     service = StripeCommerceService()
 
@@ -117,7 +136,7 @@ def test_provider_commerce_requires_confirmation_and_never_exposes_secret_to_flu
 
 
 def test_provider_commerce_returns_activity_scoped_external_checkout_options() -> None:
-    service = StripeCommerceService()
+    service = StripeCommerceService(search_client=FailingPackageSearchClient())
     itinerary = _commerce_itinerary()
 
     response = service.search_packages(
@@ -135,6 +154,39 @@ def test_provider_commerce_returns_activity_scoped_external_checkout_options() -
     assert all("Singapore Zoo" in result.name for result in response.results)
     assert all(result.checkout_url.startswith("https://") for result in response.results)
     assert response.has_more is True
+
+
+def test_provider_commerce_returns_agentic_source_backed_options() -> None:
+    service = StripeCommerceService(search_client=FakePackageSearchClient())
+    itinerary = _commerce_itinerary()
+
+    response = service.search_packages(
+        ProviderPackageSearchRequest(
+            itinerary_id=itinerary.id,
+            day_index=0,
+            stop_index=0,
+            query="night safari tickets",
+        ),
+        itinerary=itinerary,
+    )
+
+    assert response.activity_name == "Singapore Zoo"
+    assert len(response.results) == 1
+    assert response.results[0].name == "Singapore Zoo Official Admission"
+    assert response.results[0].checkout_url == "https://www.mandai.com/en/tickets.html"
+    assert "package_search_sequence" in response.evidence_note
+
+
+def test_booking_call_language_resolver_uses_region_and_defaults_to_english() -> None:
+    service = BookingCallService(maps_client=NoopBookingMapsClient())  # type: ignore[arg-type]
+
+    japanese = service._resolve_call_language(venue_name="Sushi Dai", region="Tokyo, Japan")
+    unknown = service._resolve_call_language(venue_name="Cafe Anywhere", region="")
+
+    assert japanese.selected_language == "Japanese"
+    assert "booking_locale_resolver_agent" in japanese.rationale
+    assert unknown.selected_language == "English"
+    assert unknown.confidence == "low"
 
 
 def test_provider_checkout_requires_explicit_confirmation() -> None:
@@ -187,3 +239,47 @@ def _commerce_itinerary() -> Itinerary:
             )
         ],
     )
+
+
+class FakePackageSearchClient:
+    def search(self, *, activity_name: str, region: str, query: str, limit: int):
+        return AgenticProviderPackageOutput(
+            candidates=[
+                AgenticProviderPackageCandidate(
+                    name=f"{activity_name} Official Admission",
+                    description="Official admission ticket from the venue operator.",
+                    provider_name="Mandai Wildlife Reserve",
+                    checkout_url="https://www.mandai.com/en/tickets.html",
+                    source_url="https://www.mandai.com/en/tickets.html",
+                    confidence="high",
+                    price_summary="Shown by provider",
+                    cancellation_summary="Provider terms apply",
+                )
+            ],
+            evidence_note="Mocked grounded package result.",
+        )
+
+
+class FailingPackageSearchClient:
+    def search(self, *, activity_name: str, region: str, query: str, limit: int):
+        raise RuntimeError("grounding unavailable")
+
+
+class FakeAskClient:
+    def answer(self, request: AskAnythingRequest):
+        from app.services.ask_anything import AskAnythingResponse
+
+        return AskAnythingResponse(
+            intent=AskAnythingIntent.INFORMATIONAL,
+            agent_message=f"Look for the architecture and current exhibitions at {request.venue_name}.",
+        )
+
+
+class FailingAskClient:
+    def answer(self, request: AskAnythingRequest):
+        raise RuntimeError("agent unavailable")
+
+
+class NoopBookingMapsClient:
+    def find_phone_number(self, query: str, *, region: str = "") -> str | None:
+        return None
