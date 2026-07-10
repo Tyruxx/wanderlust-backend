@@ -3,15 +3,11 @@
 FastAPI backend for the Flutter app in `../smart_travel_itinerary_flutter`.
 
 Backend uses Google ADK 2.0 for agentic planning and active-itinerary workflows.
-Google Cloud is only required for external API calls (Gemini/Vertex AI, Gemini
-Google Search grounding, and Google Maps Platform).
-Backend runtime state is local SQLite by default. Flutter remains the
-local-first source of truth for traveler preferences and saved itineraries;
-backend requests use an `X-User-Id` device context header rather than an
-end-user identity provider. In the Flutter app this is an anonymous `anon_...`
-device ID generated once and stored locally. The production Cloud Run path uses
-Secret Manager for service credentials and may use Firestore only for minimal,
-redacted Twilio booking-call status logs.
+Production backend features run on Cloud Run and store backend app state in
+Firestore, scoped by the anonymous `X-User-Id` device context header. Flutter
+does not use an end-user identity provider; it generates an anonymous
+`anon_...` device ID once and stores it locally. SQLite remains available for
+local development and tests.
 
 ## Local Setup
 
@@ -52,19 +48,21 @@ confirmed booking call through `BookingCallService`, checks Twilio returns a
 queued call SID, simulates the venue pressing `2` to confirm the request was
 received, then hangs up the call. In production calls, Gemini Live delivers the
 booking request first, then Twilio asks the venue to press `1` to repeat the
-booking details or `2` to mark the request as received. Calls that end before
-`2` is pressed resolve as failed so the user is not told a booking was received
-without venue confirmation. On Twilio trial accounts, the test
+booking details through Gemini Live, `2` to mark the request as received, or
+`3` to decline the reservation. Calls that end before `2` or `3` is pressed
+resolve as failed so the user is not told a booking was received without venue
+confirmation. On Twilio trial accounts, the test
 destination number must be verified in Twilio. The opt-in flag must be set in
 the shell for that command so normal `pytest` runs cannot accidentally place a
 call just because `.env` exists.
 
 ## Google Cloud Run Deployment
 
-Cloud Run is required for the agent-assisted booking call feature because
-Twilio must reach public HTTPS and WSS endpoints. The mobile app can stay
-anonymous and local-first: it sends the local `anon_...` device ID as
-`X-User-Id`, while Cloud Run routes booking-call state by that anonymous key.
+Cloud Run is required for production backend features and for the
+agent-assisted booking call feature because Twilio must reach public HTTPS and
+WSS endpoints. The mobile app stays anonymous: it sends the local `anon_...`
+device ID as `X-User-Id`, while Cloud Run scopes Firestore app state and
+booking-call state by that anonymous key.
 
 ### 1. Create Secret Manager Values
 
@@ -102,6 +100,9 @@ instance. Add external session storage before increasing max instances.
 
 Cloud call logging is enabled by default in Cloud Run with
 `CALL_LOG_BACKEND=firestore` and `CALL_LOG_COLLECTION=wanderlust_booking_call_logs`.
+Production app-state storage is enabled with
+`WANDERLUST_STORAGE_BACKEND=firestore` and
+`FIRESTORE_COLLECTION_PREFIX=wanderlust`.
 The deploy script grants the runtime service account `roles/datastore.user`.
 Call logs must stay redacted: no raw callback phone, reservation name, venue
 hotline override, or full transcript should be stored.

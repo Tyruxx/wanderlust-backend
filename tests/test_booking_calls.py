@@ -57,12 +57,15 @@ def test_twiml_prompts_venue_to_repeat_or_confirm_booking(monkeypatch) -> None:
     assert "<Gather" in twiml
     assert "Press 1 to hear the booking information again" in twiml
     assert "Press 2 if the booking request has been received" in twiml
+    assert "Press 3 to decline the reservation" in twiml
 
     repeat_twiml = service.handle_voice_menu_choice(
         stream_token=service.stream_token,
         digits="1",
     )
-    assert "tomorrow at 7pm" in repeat_twiml
+    assert "tomorrow at 7pm" not in repeat_twiml
+    assert "<Connect>" in repeat_twiml
+    assert "<Stream" in repeat_twiml
     assert "<Gather" in repeat_twiml
 
     booked_twiml = service.handle_voice_menu_choice(
@@ -80,6 +83,37 @@ def test_twiml_prompts_venue_to_repeat_or_confirm_booking(monkeypatch) -> None:
     still_booked = service.get_status(record.call_id, user_id="user-1")
     assert still_booked is not None
     assert still_booked.status == BookingCallStatus.BOOKED
+
+
+def test_voice_menu_digit_three_marks_booking_declined(monkeypatch) -> None:
+    _configure_call_env(monkeypatch)
+    service = FakeBookingCallService()
+
+    record = service.start_call(
+        user_id="user-1",
+        itinerary=_itinerary(),
+        day_index=0,
+        stop_index=0,
+        details=_details(),
+        confirmed=True,
+    )
+
+    assert service.stream_token is not None
+    declined_twiml = service.handle_voice_menu_choice(
+        stream_token=service.stream_token,
+        digits="3",
+    )
+    assert "marked as declined" in declined_twiml
+
+    status = service.get_status(record.call_id, user_id="user-1")
+    assert status is not None
+    assert status.status == BookingCallStatus.DECLINED
+    assert status.details is None
+
+    service.update_twilio_status(call_sid="CA1234567890", status="completed")
+    still_declined = service.get_status(record.call_id, user_id="user-1")
+    assert still_declined is not None
+    assert still_declined.status == BookingCallStatus.DECLINED
 
 
 def test_twilio_completed_without_keypad_confirmation_is_failed(monkeypatch) -> None:

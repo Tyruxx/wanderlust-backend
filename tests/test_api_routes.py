@@ -355,6 +355,46 @@ class ApiRouteTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(websocket.receive_json()["status"], "failed")
 
+    def test_booking_call_websocket_reports_declined_from_voice_menu(self) -> None:
+        self._configure_call_env()
+        booking_service = FakeApiBookingCallService()
+        app.dependency_overrides[get_booking_service] = lambda: booking_service
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(user_id="user-1", version=2, onboarding_required=False),
+        )
+        itinerary = self.client.post("/v1/itineraries", json=chat_itinerary_payload()).json()
+        started = self.client.post(
+            f"/v1/itineraries/{itinerary['id']}/booking-calls",
+            json={
+                "day_index": 0,
+                "stop_index": 0,
+                "confirmed": True,
+                "details": {
+                    "venue_name": "Colosseum",
+                    "venue_phone": "+15551234567",
+                    "reservation_datetime": "Monday, July 6, 2026 at 7 PM",
+                    "party_size": 2,
+                    "reservation_name": "Ada",
+                    "callback_phone": "+15550001111",
+                },
+            },
+        )
+        call = started.json()["call"]
+
+        with self.client.websocket_connect(
+            f"/v1/booking-calls/ws/{call['call_id']}",
+            headers={"X-User-Id": "user-1"},
+        ) as websocket:
+            self.assertEqual(websocket.receive_json()["status"], "queued")
+            self.assertIsNotNone(booking_service.stream_token)
+            response = self.client.post(
+                f"/v1/booking-calls/voice-menu/{booking_service.stream_token}",
+                data={"Digits": "3"},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(websocket.receive_json()["status"], "declined")
+
     def test_direct_booking_call_does_not_require_cloud_itinerary_copy(self) -> None:
         payload = {
             "itinerary_id": "local-only-itinerary",

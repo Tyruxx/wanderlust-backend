@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     booking_call_max_seconds: int = 300
     call_log_backend: str = "disabled"
     call_log_collection: str = "wanderlust_booking_call_logs"
+    wanderlust_storage_backend: str = "sqlite"
+    firestore_collection_prefix: str = "wanderlust"
 
     log_level: str = "INFO"
     request_timeout_seconds: int = 30

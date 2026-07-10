@@ -142,6 +142,14 @@ resource "google_cloud_run_v2_service" "backend" {
         name  = "CALL_LOG_COLLECTION"
         value = var.call_log_collection
       }
+      env {
+        name  = "WANDERLUST_STORAGE_BACKEND"
+        value = var.wanderlust_storage_backend
+      }
+      env {
+        name  = "FIRESTORE_COLLECTION_PREFIX"
+        value = var.firestore_collection_prefix
+      }
 
       dynamic "env" {
         for_each = {

@@ -9,6 +9,7 @@ from typing import Generic, TypeVar
 
 from pydantic import BaseModel
 
+from app.core.settings import get_settings
 from app.domain.models import (
     DynamicBehaviorPreferences,
     Itinerary,
@@ -46,6 +47,15 @@ class _SerializationError(RuntimeError):
 
 class SqliteRepository(Generic[T]):
     def __init__(self, table_name: str, model_cls: type[T]) -> None:
+        settings = get_settings()
+        if settings.wanderlust_storage_backend.strip().lower() == "firestore":
+            self._delegate: FirestoreRepository[T] | None = FirestoreRepository(
+                table_name,
+                model_cls,
+                collection_prefix=settings.firestore_collection_prefix,
+            )
+            return
+        self._delegate = None
         self._table = f"repo_{table_name}"
         self._model_cls = model_cls
         self._init_table()
@@ -71,6 +81,8 @@ class SqliteRepository(Generic[T]):
             ) from exc
 
     def create(self, doc_id: str, model: T) -> T:
+        if self._delegate is not None:
+            return self._delegate.create(doc_id, model)
         conn = _get_connection()
         conn.execute(
             f"INSERT OR REPLACE INTO {self._table} (id, data) VALUES (?, ?)",
@@ -80,6 +92,8 @@ class SqliteRepository(Generic[T]):
         return model
 
     def get(self, doc_id: str) -> T | None:
+        if self._delegate is not None:
+            return self._delegate.get(doc_id)
         conn = _get_connection()
         row = conn.execute(
             f"SELECT data FROM {self._table} WHERE id = ?", (doc_id,)
@@ -89,14 +103,21 @@ class SqliteRepository(Generic[T]):
         return self._from_row(doc_id, row["data"])
 
     def update(self, doc_id: str, model: T) -> T:
+        if self._delegate is not None:
+            return self._delegate.update(doc_id, model)
         return self.create(doc_id, model)
 
     def delete(self, doc_id: str) -> None:
+        if self._delegate is not None:
+            self._delegate.delete(doc_id)
+            return
         conn = _get_connection()
         conn.execute(f"DELETE FROM {self._table} WHERE id = ?", (doc_id,))
         conn.commit()
 
     def query_by_field(self, field: str, value: object) -> list[T]:
+        if self._delegate is not None:
+            return self._delegate.query_by_field(field, value)
         conn = _get_connection()
         rows = conn.execute(f"SELECT id, data FROM {self._table}").fetchall()
         results: list[T] = []
@@ -107,14 +128,102 @@ class SqliteRepository(Generic[T]):
         return results
 
     def list_all(self) -> list[T]:
+        if self._delegate is not None:
+            return self._delegate.list_all()
         conn = _get_connection()
         rows = conn.execute(f"SELECT id, data FROM {self._table}").fetchall()
         return [self._from_row(row["id"], row["data"]) for row in rows]
 
     def clear(self) -> None:
+        if self._delegate is not None:
+            self._delegate.clear()
+            return
         conn = _get_connection()
         conn.execute(f"DELETE FROM {self._table}")
         conn.commit()
+
+
+class FirestoreRepository(Generic[T]):
+    def __init__(
+        self,
+        table_name: str,
+        model_cls: type[T],
+        *,
+        collection_prefix: str = "wanderlust",
+        client: object | None = None,
+    ) -> None:
+        safe_prefix = collection_prefix.strip() or "wanderlust"
+        self._collection_name = f"{safe_prefix}_{table_name}"
+        self._model_cls = model_cls
+        self._client = client
+
+    def _get_client(self):
+        if self._client is not None:
+            return self._client
+        try:
+            from google.cloud import firestore
+        except Exception as exc:  # pragma: no cover - optional cloud dependency.
+            raise RuntimeError("google-cloud-firestore is not installed.") from exc
+        self._client = firestore.Client()
+        return self._client
+
+    def _collection(self):
+        return self._get_client().collection(self._collection_name)
+
+    def _to_document(self, doc_id: str, model: T) -> dict[str, object]:
+        data = model.model_dump(mode="json")
+        data["id"] = doc_id
+        return {"data": data}
+
+    def _from_document(self, doc_id: str, raw: dict[str, object] | None) -> T | None:
+        if not raw:
+            return None
+        data = raw.get("data")
+        if not isinstance(data, dict):
+            return None
+        model_data = dict(data)
+        model_data["id"] = doc_id
+        try:
+            return self._model_cls.model_validate(model_data)
+        except Exception as exc:
+            raise _SerializationError(
+                f"Failed to deserialize {self._model_cls.__name__}"
+            ) from exc
+
+    def create(self, doc_id: str, model: T) -> T:
+        self._collection().document(doc_id).set(self._to_document(doc_id, model))
+        return model
+
+    def get(self, doc_id: str) -> T | None:
+        snapshot = self._collection().document(doc_id).get()
+        if not getattr(snapshot, "exists", False):
+            return None
+        return self._from_document(doc_id, snapshot.to_dict())
+
+    def update(self, doc_id: str, model: T) -> T:
+        return self.create(doc_id, model)
+
+    def delete(self, doc_id: str) -> None:
+        self._collection().document(doc_id).delete()
+
+    def query_by_field(self, field: str, value: object) -> list[T]:
+        return [
+            item
+            for item in self.list_all()
+            if getattr(item, field, None) == value
+        ]
+
+    def list_all(self) -> list[T]:
+        results: list[T] = []
+        for snapshot in self._collection().stream():
+            item = self._from_document(snapshot.id, snapshot.to_dict())
+            if item is not None:
+                results.append(item)
+        return results
+
+    def clear(self) -> None:
+        for snapshot in self._collection().stream():
+            snapshot.reference.delete()
 
 
 class AuditLogEntry(BaseModel):

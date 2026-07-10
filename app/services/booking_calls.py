@@ -44,6 +44,7 @@ class BookingCallStatus(str, Enum):
     RINGING = "ringing"
     IN_PROGRESS = "in_progress"
     BOOKED = "booked"
+    DECLINED = "declined"
     COMPLETED = "completed"
     FAILED = "failed"
     FALLBACK_REQUIRED = "fallback_required"
@@ -128,6 +129,7 @@ class _LiveCallContext:
     record: BookingCallRecord
     stream_token: str
     expires_at: datetime
+    repeat_requested: bool = False
     transcript: list[str] = field(default_factory=list)
 
 
@@ -376,8 +378,7 @@ class BookingCallService:
     def twiml_for_token(self, stream_token: str) -> str:
         settings = get_settings()
         public_base = settings.public_backend_base_url.rstrip("/")
-        ws_base = public_base.replace("https://", "wss://").replace("http://", "ws://")
-        stream_url = f"{ws_base}/v1/booking-calls/stream/{escape(stream_token)}"
+        stream_url = self._stream_url_for_token(stream_token)
         menu_url = f"{public_base}/v1/booking-calls/voice-menu/{escape(stream_token)}"
         return (
             '<?xml version="1.0" encoding="UTF-8"?>'
@@ -398,6 +399,7 @@ class BookingCallService:
             record.updated_at = _utc_now()
             if mapped in {
                 BookingCallStatus.BOOKED,
+                BookingCallStatus.DECLINED,
                 BookingCallStatus.COMPLETED,
                 BookingCallStatus.FAILED,
                 BookingCallStatus.FALLBACK_REQUIRED,
@@ -433,11 +435,29 @@ class BookingCallService:
                 "<Hangup />"
                 "</Response>"
             )
-        if digits == "1":
+        if digits == "3":
+            record.status = BookingCallStatus.DECLINED
+            record.result_summary = "The venue declined the reservation request."
+            record.updated_at = _utc_now()
+            self._records[record.call_id] = _scrub_record(record)
+            self._log_call_record(record)
+            self._push_status_update(record.call_id)
+            self._stream_contexts.pop(stream_token, None)
             return (
                 '<?xml version="1.0" encoding="UTF-8"?>'
                 "<Response>"
-                f"<Say>{escape(_booking_voice_summary(record))}</Say>"
+                "<Say>Thank you. The booking has been marked as declined. Goodbye.</Say>"
+                "<Hangup />"
+                "</Response>"
+            )
+        if digits == "1":
+            context.repeat_requested = True
+            return (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                "<Response>"
+                "<Connect>"
+                f'<Stream url="{self._stream_url_for_token(stream_token)}" />'
+                "</Connect>"
                 f"{self._confirmation_menu_twiml(stream_token, action_url=menu_url)}"
                 "</Response>"
             )
@@ -477,6 +497,7 @@ class BookingCallService:
             self._records[context.record.call_id] = _scrub_record(context.record)
             if context.record.status in {
                 BookingCallStatus.BOOKED,
+                BookingCallStatus.DECLINED,
                 BookingCallStatus.FAILED,
                 BookingCallStatus.FALLBACK_REQUIRED,
             }:
@@ -553,12 +574,19 @@ class BookingCallService:
             ),
         )
 
+    def _stream_url_for_token(self, stream_token: str) -> str:
+        settings = get_settings()
+        public_base = settings.public_backend_base_url.rstrip("/")
+        ws_base = public_base.replace("https://", "wss://").replace("http://", "ws://")
+        return f"{ws_base}/v1/booking-calls/stream/{escape(stream_token)}"
+
     def _confirmation_menu_twiml(self, stream_token: str, *, action_url: str) -> str:
         _ = stream_token
         return (
             f'<Gather numDigits="1" action="{escape(action_url)}" method="POST" timeout="12">'
             "<Say>Press 1 to hear the booking information again. "
-            "Press 2 if the booking request has been received.</Say>"
+            "Press 2 if the booking request has been received. "
+            "Press 3 to decline the reservation.</Say>"
             "</Gather>"
             "<Say>No confirmation was received. Goodbye.</Say>"
             "<Hangup />"
@@ -586,7 +614,11 @@ class GeminiLiveTwilioBridge:
             raise RuntimeError("Gemini Live SDK is unavailable.") from exc
 
         client = genai.Client(api_key=settings.google_api_key)
-        system_instruction = _booking_voice_instruction(self.context.record)
+        system_instruction = _booking_voice_instruction(
+            self.context.record,
+            repeat_requested=self.context.repeat_requested,
+        )
+        self.context.repeat_requested = False
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
             system_instruction=types.Content(parts=[types.Part(text=system_instruction)]),
@@ -774,8 +806,8 @@ def _map_twilio_status(
     current_status: BookingCallStatus | None = None,
 ) -> BookingCallStatus:
     normalized = status.lower()
-    if current_status == BookingCallStatus.BOOKED:
-        return BookingCallStatus.BOOKED
+    if current_status in {BookingCallStatus.BOOKED, BookingCallStatus.DECLINED}:
+        return current_status
     if normalized in {"queued", "initiated"}:
         return BookingCallStatus.QUEUED
     if normalized == "ringing":
@@ -790,6 +822,8 @@ def _map_twilio_status(
 def _terminal_summary(status: BookingCallStatus) -> str:
     if status == BookingCallStatus.BOOKED:
         return "The venue confirmed that the booking request was received."
+    if status == BookingCallStatus.DECLINED:
+        return "The venue declined the reservation request."
     if status == BookingCallStatus.COMPLETED:
         return "The booking call completed. Check chat for details and any follow-up."
     return (
@@ -815,7 +849,11 @@ def _pcm24_to_twilio_payload(pcm24: bytes) -> str:
     return base64.b64encode(mulaw).decode("ascii")
 
 
-def _booking_voice_instruction(record: BookingCallRecord) -> str:
+def _booking_voice_instruction(
+    record: BookingCallRecord,
+    *,
+    repeat_requested: bool = False,
+) -> str:
     details = record.details
     if details is None:
         return (
@@ -830,9 +868,16 @@ def _booking_voice_instruction(record: BookingCallRecord) -> str:
         f"Language selection confidence: {record.language_confidence}. "
         f"Rationale: {record.language_rationale} "
     )
+    repeat_guidance = (
+        "This is a repeat requested by the venue. Repeat the booking details clearly, "
+        "then remind the venue of the keypad choices. "
+        if repeat_requested
+        else ""
+    )
     return (
         "You are an AI booking assistant calling a venue on behalf of a traveler. "
         "Immediately disclose that you are an AI assistant calling for the traveler. "
+        f"{repeat_guidance}"
         f"{language_guidance}"
         f"Request a reservation at {details.venue_name} for {details.reservation_datetime}, "
         f"party of {details.party_size}, under {details.reservation_name}. "
@@ -840,7 +885,8 @@ def _booking_voice_instruction(record: BookingCallRecord) -> str:
         "Do not provide or request payment card details. Do not purchase anything. "
         "If the venue asks for payment, say the traveler will follow up directly. "
         "After giving the booking details, tell the venue that the automated system will ask them "
-        "to press 1 to hear the information again or press 2 if the booking request has been received."
+        "to press 1 to hear the information again, press 2 if the booking request has been received, "
+        "or press 3 if they decline the reservation."
     )
 
 

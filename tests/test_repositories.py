@@ -9,9 +9,63 @@ from app.domain.models import (
     TripBrief,
 )
 from app.services.repositories import (
+    FirestoreRepository,
     ItineraryRepository,
     TravelPreferencesRepository,
 )
+
+
+class FakeSnapshot:
+    def __init__(self, doc_id: str, data: dict[str, object] | None, collection: "FakeCollection") -> None:
+        self.id = doc_id
+        self._data = data
+        self.exists = data is not None
+        self.reference = FakeDocument(doc_id, collection)
+
+    def to_dict(self) -> dict[str, object] | None:
+        return self._data
+
+
+class FakeDocument:
+    def __init__(self, doc_id: str, collection: "FakeCollection") -> None:
+        self._doc_id = doc_id
+        self._collection = collection
+
+    def set(self, data: dict[str, object]) -> None:
+        self._collection.data[self._doc_id] = data
+
+    def get(self) -> FakeSnapshot:
+        return FakeSnapshot(
+            self._doc_id,
+            self._collection.data.get(self._doc_id),
+            self._collection,
+        )
+
+    def delete(self) -> None:
+        self._collection.data.pop(self._doc_id, None)
+
+
+class FakeCollection:
+    def __init__(self) -> None:
+        self.data: dict[str, dict[str, object]] = {}
+
+    def document(self, doc_id: str) -> FakeDocument:
+        return FakeDocument(doc_id, self)
+
+    def stream(self) -> list[FakeSnapshot]:
+        return [
+            FakeSnapshot(doc_id, data, self)
+            for doc_id, data in self.data.items()
+        ]
+
+
+class FakeFirestoreClient:
+    def __init__(self) -> None:
+        self.collections: dict[str, FakeCollection] = {}
+
+    def collection(self, name: str) -> FakeCollection:
+        self.collections.setdefault(name, FakeCollection())
+        return self.collections[name]
 
 
 class TravelPreferencesRepositoryTests(unittest.TestCase):
@@ -56,6 +110,33 @@ class TravelPreferencesRepositoryTests(unittest.TestCase):
         self.assertIsNotNone(result)
         if result:
             self.assertEqual(result.version, 4)
+
+
+class FirestoreRepositoryTests(unittest.TestCase):
+    def test_firestore_preferences_are_stored_in_prefixed_collection(self) -> None:
+        client = FakeFirestoreClient()
+        repo = FirestoreRepository(
+            "preferences",
+            TravelPreferences,
+            collection_prefix="wanderlust_test",
+            client=client,
+        )
+        prefs = TravelPreferences(
+            user_id="anon-device-1",
+            version=2,
+            onboarding_required=False,
+            pace="balanced",
+        )
+
+        repo.create("anon-device-1", prefs)
+
+        self.assertIn("wanderlust_test_preferences", client.collections)
+        stored = repo.get("anon-device-1")
+        self.assertIsNotNone(stored)
+        if stored:
+            self.assertEqual(stored.user_id, "anon-device-1")
+            self.assertFalse(stored.onboarding_required)
+        self.assertEqual(len(repo.query_by_field("user_id", "anon-device-1")), 1)
 
 
 class ItineraryRepositoryTests(unittest.TestCase):

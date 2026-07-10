@@ -76,3 +76,15 @@ variable "call_log_collection" {
   description = "Firestore collection for redacted Twilio call status logs."
   default     = "wanderlust_booking_call_logs"
 }
+
+variable "wanderlust_storage_backend" {
+  type        = string
+  description = "Backend app-state repository backend. Use firestore in Cloud Run production."
+  default     = "firestore"
+}
+
+variable "firestore_collection_prefix" {
+  type        = string
+  description = "Firestore collection prefix for device-scoped Wanderlust app state."
+  default     = "wanderlust"
+}
