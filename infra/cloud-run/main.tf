@@ -15,10 +15,16 @@ locals {
 resource "google_project_service" "required" {
   for_each = toset([
     "artifactregistry.googleapis.com",
+    "aiplatform.googleapis.com",
     "cloudbuild.googleapis.com",
     "firestore.googleapis.com",
+    "generativelanguage.googleapis.com",
+    "geocoding-backend.googleapis.com",
+    "places.googleapis.com",
     "run.googleapis.com",
+    "routes.googleapis.com",
     "secretmanager.googleapis.com",
+    "weather.googleapis.com",
   ])
 
   project            = var.project_id

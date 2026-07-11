@@ -64,25 +64,35 @@ WSS endpoints. The mobile app stays anonymous: it sends the local `anon_...`
 device ID as `X-User-Id`, while Cloud Run scopes Firestore app state and
 booking-call state by that anonymous key.
 
-### 1. Create Secret Manager Values
+For the full production checklist, see `../PRODUCTION_SETUP.md`.
+
+### 1. Prepare Google Cloud Resources
+
+```sh
+cd backend
+GOOGLE_CLOUD_PROJECT=your-project-id \
+GOOGLE_CLOUD_REGION=asia-southeast1 \
+./scripts/setup_gcp_resources.sh
+```
+
+The setup script enables required Google APIs, creates the runtime service
+account and Artifact Registry repository when missing, creates the default
+Firestore database when missing, creates required Secret Manager secrets when
+missing, and grants the service account narrow Firestore plus per-secret access.
+
+### 2. Add Secret Manager Values
 
 The deployment expects these Secret Manager secret names:
 
 ```sh
-printf '%s' "$GOOGLE_API_KEY" | gcloud secrets create google-api-key --data-file=-
-printf '%s' "$GOOGLE_MAPS_BACKEND_API_KEY" | gcloud secrets create google-maps-backend-api-key --data-file=-
-printf '%s' "$TWILIO_ACCOUNT_SID" | gcloud secrets create twilio-account-sid --data-file=-
-printf '%s' "$TWILIO_AUTH_TOKEN" | gcloud secrets create twilio-auth-token --data-file=-
-printf '%s' "$TWILIO_FROM_NUMBER" | gcloud secrets create twilio-from-number --data-file=-
-```
-
-If a secret already exists, add a new version instead:
-
-```sh
+printf '%s' "$GOOGLE_API_KEY" | gcloud secrets versions add google-api-key --data-file=-
+printf '%s' "$GOOGLE_MAPS_BACKEND_API_KEY" | gcloud secrets versions add google-maps-backend-api-key --data-file=-
+printf '%s' "$TWILIO_ACCOUNT_SID" | gcloud secrets versions add twilio-account-sid --data-file=-
 printf '%s' "$TWILIO_AUTH_TOKEN" | gcloud secrets versions add twilio-auth-token --data-file=-
+printf '%s' "$TWILIO_FROM_NUMBER" | gcloud secrets versions add twilio-from-number --data-file=-
 ```
 
-### 2. Deploy With Script
+### 3. Deploy With Script
 
 ```sh
 cd backend
@@ -107,7 +117,7 @@ The deploy script grants the runtime service account `roles/datastore.user`.
 Call logs must stay redacted: no raw callback phone, reservation name, venue
 hotline override, or full transcript should be stored.
 
-### 3. Deploy With Terraform
+### 4. Deploy With Terraform
 
 ```sh
 cd backend
@@ -136,7 +146,7 @@ terraform apply \
   -var="public_backend_base_url=$(terraform output -raw service_url)"
 ```
 
-### 4. Build/Run Flutter Against Cloud Run
+### 5. Build/Run Flutter Against Cloud Run
 
 ```sh
 flutter run \
@@ -144,7 +154,16 @@ flutter run \
   --dart-define=GOOGLE_MAPS_IOS_API_KEY=YOUR_IOS_MAPS_KEY
 ```
 
-### 5. Verify Twilio E2E
+For App Store/TestFlight builds, prefer:
+
+```sh
+cd ../smart_travel_itinerary_flutter
+PUBLIC_BACKEND_BASE_URL=https://YOUR_CLOUD_RUN_URL \
+GOOGLE_MAPS_IOS_API_KEY=YOUR_IOS_MAPS_KEY \
+./scripts/build_ios_app_store.sh
+```
+
+### 6. Verify Twilio E2E
 
 Use a Twilio-verified destination number for trial accounts:
 

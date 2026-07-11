@@ -3,6 +3,7 @@ set -euo pipefail
 
 : "${GOOGLE_CLOUD_PROJECT:?Set GOOGLE_CLOUD_PROJECT}"
 : "${GOOGLE_CLOUD_REGION:=asia-southeast1}"
+: "${FIRESTORE_DATABASE_LOCATION:=${GOOGLE_CLOUD_REGION}}"
 : "${ARTIFACT_REGISTRY_REPOSITORY:=wanderlust}"
 : "${CLOUD_RUN_SERVICE:=wanderlust-backend}"
 : "${CLOUD_RUN_SERVICE_ACCOUNT:=wanderlust-backend}"
@@ -10,6 +11,7 @@ set -euo pipefail
 IMAGE="${GOOGLE_CLOUD_REGION}-docker.pkg.dev/${GOOGLE_CLOUD_PROJECT}/${ARTIFACT_REGISTRY_REPOSITORY}/${CLOUD_RUN_SERVICE}:$(git rev-parse --short HEAD)"
 SERVICE_ACCOUNT_EMAIL="${CLOUD_RUN_SERVICE_ACCOUNT}@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com"
 PUBLIC_BASE="${PUBLIC_BACKEND_BASE_URL:-https://pending-cloud-run-url.invalid}"
+CORS_ORIGINS="${CORS_ALLOWED_ORIGINS:-${FRONTEND_BASE_URL:-}}"
 
 gcloud services enable \
   run.googleapis.com \
@@ -17,7 +19,21 @@ gcloud services enable \
   artifactregistry.googleapis.com \
   secretmanager.googleapis.com \
   firestore.googleapis.com \
+  aiplatform.googleapis.com \
+  generativelanguage.googleapis.com \
+  places.googleapis.com \
+  routes.googleapis.com \
+  geocoding-backend.googleapis.com \
+  weather.googleapis.com \
   --project "${GOOGLE_CLOUD_PROJECT}"
+
+if ! gcloud firestore databases describe --database="(default)" \
+  --project "${GOOGLE_CLOUD_PROJECT}" >/dev/null 2>&1; then
+  gcloud firestore databases create \
+    --database="(default)" \
+    --location="${FIRESTORE_DATABASE_LOCATION}" \
+    --project "${GOOGLE_CLOUD_PROJECT}"
+fi
 
 if ! gcloud iam service-accounts describe "${SERVICE_ACCOUNT_EMAIL}" \
   --project "${GOOGLE_CLOUD_PROJECT}" >/dev/null 2>&1; then
@@ -52,6 +68,13 @@ for SECRET_NAME in \
     printf 'Create it first, for example: printf %%s "$VALUE" | gcloud secrets create %s --data-file=-\n' "${SECRET_NAME}" >&2
     exit 1
   fi
+  if ! gcloud secrets versions access latest \
+    --secret "${SECRET_NAME}" \
+    --project "${GOOGLE_CLOUD_PROJECT}" >/dev/null 2>&1; then
+    printf 'Missing enabled latest Secret Manager version: %s\n' "${SECRET_NAME}" >&2
+    printf 'Add one first, for example: printf %%s "$VALUE" | gcloud secrets versions add %s --data-file=-\n' "${SECRET_NAME}" >&2
+    exit 1
+  fi
   gcloud secrets add-iam-policy-binding "${SECRET_NAME}" \
     --project "${GOOGLE_CLOUD_PROJECT}" \
     --member "serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
@@ -70,7 +93,7 @@ gcloud run deploy "${CLOUD_RUN_SERVICE}" \
   --timeout 3600 \
   --min-instances 1 \
   --max-instances 1 \
-  --set-env-vars "APP_ENV=production,APP_NAME=Wanderlust Trip Backend,BACKEND_HOST=0.0.0.0,BACKEND_PORT=8080,BACKEND_BASE_URL=${PUBLIC_BASE},FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-},CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*},USE_VERTEX_AI=${USE_VERTEX_AI:-false},VERTEX_AI_LOCATION=${VERTEX_AI_LOCATION:-${GOOGLE_CLOUD_REGION}},GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash},GEMINI_LIVE_MODEL=${GEMINI_LIVE_MODEL:-gemini-3.1-flash-live-preview},BOOKING_CALL_MAX_SECONDS=${BOOKING_CALL_MAX_SECONDS:-300},PUBLIC_BACKEND_BASE_URL=${PUBLIC_BASE},CALL_LOG_BACKEND=${CALL_LOG_BACKEND:-firestore},CALL_LOG_COLLECTION=${CALL_LOG_COLLECTION:-wanderlust_booking_call_logs},WANDERLUST_STORAGE_BACKEND=${WANDERLUST_STORAGE_BACKEND:-firestore},FIRESTORE_COLLECTION_PREFIX=${FIRESTORE_COLLECTION_PREFIX:-wanderlust}" \
+  --set-env-vars "^~^APP_ENV=production~APP_NAME=Wanderlust Trip Backend~BACKEND_HOST=0.0.0.0~BACKEND_PORT=8080~BACKEND_BASE_URL=${PUBLIC_BASE}~FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-}~CORS_ALLOWED_ORIGINS=${CORS_ORIGINS}~USE_VERTEX_AI=${USE_VERTEX_AI:-false}~VERTEX_AI_LOCATION=${VERTEX_AI_LOCATION:-${GOOGLE_CLOUD_REGION}}~GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}~GEMINI_LIVE_MODEL=${GEMINI_LIVE_MODEL:-gemini-3.1-flash-live-preview}~BOOKING_CALL_MAX_SECONDS=${BOOKING_CALL_MAX_SECONDS:-300}~PUBLIC_BACKEND_BASE_URL=${PUBLIC_BASE}~CALL_LOG_BACKEND=${CALL_LOG_BACKEND:-firestore}~CALL_LOG_COLLECTION=${CALL_LOG_COLLECTION:-wanderlust_booking_call_logs}~WANDERLUST_STORAGE_BACKEND=${WANDERLUST_STORAGE_BACKEND:-firestore}~FIRESTORE_COLLECTION_PREFIX=${FIRESTORE_COLLECTION_PREFIX:-wanderlust}" \
   --set-secrets "GOOGLE_API_KEY=google-api-key:latest,GOOGLE_MAPS_BACKEND_API_KEY=google-maps-backend-api-key:latest,TWILIO_ACCOUNT_SID=twilio-account-sid:latest,TWILIO_AUTH_TOKEN=twilio-auth-token:latest,TWILIO_FROM_NUMBER=twilio-from-number:latest"
 
 SERVICE_URL="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \

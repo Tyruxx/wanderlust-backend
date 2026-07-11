@@ -34,8 +34,8 @@ variable "frontend_base_url" {
 
 variable "cors_allowed_origins" {
   type        = string
-  description = "Comma-separated CORS origins. Use a concrete app URL for production."
-  default     = "*"
+  description = "Comma-separated CORS origins. Leave blank for native-app-only production; set concrete origins for web builds."
+  default     = ""
 }
 
 variable "use_vertex_ai" {
