@@ -153,6 +153,8 @@ def test_provider_commerce_returns_activity_scoped_external_checkout_options() -
     assert len(response.results) == 5
     assert all("Singapore Zoo" in result.name for result in response.results)
     assert all(result.checkout_url.startswith("https://") for result in response.results)
+    assert all("google.com/search" not in result.checkout_url for result in response.results)
+    assert all(result.source_type == "provider_discovery" for result in response.results)
     assert response.has_more is True
 
 
@@ -174,7 +176,27 @@ def test_provider_commerce_returns_agentic_source_backed_options() -> None:
     assert len(response.results) == 1
     assert response.results[0].name == "Singapore Zoo Official Admission"
     assert response.results[0].checkout_url == "https://www.mandai.com/en/tickets.html"
+    assert response.results[0].validation_summary is not None
     assert "package_search_sequence" in response.evidence_note
+
+
+def test_provider_commerce_rejects_agentic_links_without_validation_evidence() -> None:
+    service = StripeCommerceService(search_client=UnvalidatedPackageSearchClient())
+    itinerary = _commerce_itinerary()
+
+    response = service.search_packages(
+        ProviderPackageSearchRequest(
+            itinerary_id=itinerary.id,
+            day_index=0,
+            stop_index=0,
+            query="zoo tickets",
+        ),
+        itinerary=itinerary,
+    )
+
+    assert response.results
+    assert all(result.package_id.startswith("agentic-") is False for result in response.results)
+    assert all(result.source_type == "provider_discovery" for result in response.results)
 
 
 def test_booking_call_language_resolver_uses_region_and_defaults_to_english() -> None:
@@ -207,6 +229,22 @@ def test_provider_checkout_requires_explicit_confirmation() -> None:
 
     response = service.prepare_checkout(request.model_copy(update={"confirmed": True}))
     assert response.checkout_url == "https://example.com/checkout"
+
+
+def test_provider_checkout_rejects_search_result_checkout_url() -> None:
+    service = StripeCommerceService()
+    request = ProviderCheckoutRequest(
+        package_id="bad-1",
+        checkout_url="https://www.google.com/search?q=Singapore+Zoo+tickets",
+        confirmed=True,
+    )
+
+    try:
+        service.prepare_checkout(request)
+    except ValueError as exc:
+        assert "valid provider page" in str(exc)
+    else:
+        raise AssertionError("Expected search result checkout URL to be rejected.")
 
 
 def _commerce_itinerary() -> Itinerary:
@@ -254,9 +292,32 @@ class FakePackageSearchClient:
                     confidence="high",
                     price_summary="Shown by provider",
                     cancellation_summary="Provider terms apply",
+                    validation_summary=(
+                        "Grounded result points to the official Mandai ticketing page and "
+                        "was not a not-found or error page."
+                    ),
+                    source_type="official",
+                    relevance_rationale="Mandai is the operator for Singapore Zoo tickets.",
                 )
             ],
             evidence_note="Mocked grounded package result.",
+        )
+
+
+class UnvalidatedPackageSearchClient:
+    def search(self, *, activity_name: str, region: str, query: str, limit: int):
+        return AgenticProviderPackageOutput(
+            candidates=[
+                AgenticProviderPackageCandidate(
+                    name=f"{activity_name} Suspicious Admission",
+                    description="Looks plausible but no validation evidence was supplied.",
+                    provider_name="Unknown Tickets",
+                    checkout_url="https://www.google.com/search?q=Singapore+Zoo+tickets",
+                    source_url="https://www.google.com/search?q=Singapore+Zoo+tickets",
+                    confidence="high",
+                )
+            ],
+            evidence_note="Mocked invalid grounded package result.",
         )
 
 

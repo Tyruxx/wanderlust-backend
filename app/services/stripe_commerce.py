@@ -19,6 +19,8 @@ class CheckoutProvider(str, Enum):
     VIATOR = "viator"
     KLOOK = "klook"
     PELAGO = "pelago"
+    TIQETS = "tiqets"
+    HEADOUT = "headout"
     STRIPE_LINK = "stripe_link"
 
 
@@ -42,6 +44,9 @@ class ProviderPackageCandidate(BaseModel):
     confidence: str = "medium"
     price_summary: str | None = None
     cancellation_summary: str | None = None
+    validation_summary: str | None = None
+    source_type: str | None = None
+    relevance_rationale: str | None = None
     caveats: list[str] = Field(default_factory=list)
     stripe_backed: bool = False
 
@@ -72,6 +77,9 @@ class AgenticProviderPackageCandidate(BaseModel):
     confidence: str = "medium"
     price_summary: str | None = None
     cancellation_summary: str | None = None
+    validation_summary: str | None = None
+    source_type: str | None = None
+    relevance_rationale: str | None = None
     caveats: list[str] = Field(default_factory=list)
     stripe_backed: bool = False
 
@@ -173,8 +181,8 @@ class ProviderCommerceService:
         if not candidates:
             candidates = self._provider_candidates(activity_name=activity_name, query=scoped_query)
             evidence_note = (
-                "AI package search was unavailable or returned no valid provider links, "
-                "so these are scoped external provider search links. Verify final price, "
+                "AI package search was unavailable or returned no agent-validated checkout "
+                "links, so these are scoped provider discovery links. Verify final price, "
                 "availability, cancellation terms, and provider identity before paying."
             )
         start = request.offset
@@ -193,6 +201,8 @@ class ProviderCommerceService:
         guardrail = self.assert_payment_confirmation(confirmed=request.confirmed)
         if not guardrail.allowed:
             raise ValueError(guardrail.reason or "Checkout requires explicit confirmation.")
+        if _is_disallowed_checkout_url(request.checkout_url):
+            raise ValueError("Checkout URL is not a valid provider page.")
         return ProviderCheckoutResponse(
             checkout_url=request.checkout_url,
             provider_message=(
@@ -227,22 +237,12 @@ class ProviderCommerceService:
         activity_name: str,
         query: str,
     ) -> list[ProviderPackageCandidate]:
-        encoded = quote_plus(query)
         activity_encoded = quote_plus(activity_name)
         templates = [
             (
-                CheckoutProvider.OFFICIAL,
-                "Official venue search",
-                "Official tickets or packages for {activity}.",
-                f"https://www.google.com/search?q={encoded}+official+tickets",
-                "high",
-                "Official source when available",
-                "Check official refund and entry-window terms.",
-            ),
-            (
                 CheckoutProvider.GETYOURGUIDE,
-                "GetYourGuide",
-                "Guided tours, skip-the-line options, and activity packages for {activity}.",
+                "GetYourGuide discovery",
+                "Search guided tours, skip-the-line options, and activity packages for {activity}.",
                 f"https://www.getyourguide.com/s/?q={activity_encoded}",
                 "medium",
                 "Provider-listed price",
@@ -250,8 +250,8 @@ class ProviderCommerceService:
             ),
             (
                 CheckoutProvider.VIATOR,
-                "Viator",
-                "Tours and experience packages related to {activity}.",
+                "Viator discovery",
+                "Search tours and experience packages related to {activity}.",
                 f"https://www.viator.com/searchResults/all?text={activity_encoded}",
                 "medium",
                 "Provider-listed price",
@@ -259,8 +259,8 @@ class ProviderCommerceService:
             ),
             (
                 CheckoutProvider.KLOOK,
-                "Klook",
-                "Tickets, passes, transport add-ons, and local packages for {activity}.",
+                "Klook discovery",
+                "Search tickets, passes, transport add-ons, and local packages for {activity}.",
                 f"https://www.klook.com/search/result/?query={activity_encoded}",
                 "medium",
                 "Provider-listed price",
@@ -268,21 +268,30 @@ class ProviderCommerceService:
             ),
             (
                 CheckoutProvider.PELAGO,
-                "Pelago",
-                "Curated travel activities and packages for {activity}.",
+                "Pelago discovery",
+                "Search curated travel activities and packages for {activity}.",
                 f"https://www.pelago.com/en/search/?q={activity_encoded}",
                 "medium",
                 "Provider-listed price",
                 "Confirm final provider and time slot before paying.",
             ),
             (
-                CheckoutProvider.STRIPE_LINK,
-                "Public Stripe payment links",
-                "Search for public Stripe-backed checkout links for {activity}, when available.",
-                f"https://www.google.com/search?q={encoded}+site%3Abuy.stripe.com",
-                "low",
-                "Only if provider publishes a public link",
-                "Use only when the provider identity is clearly verified.",
+                CheckoutProvider.TIQETS,
+                "Tiqets discovery",
+                "Search museum, attraction, and experience tickets for {activity}.",
+                f"https://www.tiqets.com/en/search/?q={activity_encoded}",
+                "medium",
+                "Provider-listed price",
+                "Confirm official operator, final price, and entry window before paying.",
+            ),
+            (
+                CheckoutProvider.HEADOUT,
+                "Headout discovery",
+                "Search activity tickets, tours, and experiences for {activity}.",
+                f"https://www.headout.com/search/?q={activity_encoded}",
+                "medium",
+                "Provider-listed price",
+                "Confirm final provider, availability, and cancellation rules before paying.",
             ),
         ]
         return [
@@ -297,8 +306,13 @@ class ProviderCommerceService:
                 confidence=confidence,
                 price_summary=price_summary,
                 cancellation_summary=cancellation,
+                validation_summary=(
+                    "Fallback discovery link only; no agent-validated checkout page was available."
+                ),
+                source_type="provider_discovery",
+                relevance_rationale=f"Search is scoped to {activity_name}.",
                 caveats=[
-                    "External checkout; final purchase happens outside Wanderlust.",
+                    "Discovery link; choose a specific verified listing on the provider site.",
                     "Confirm provider identity, final price, and availability before payment.",
                 ],
                 stripe_backed=provider == CheckoutProvider.STRIPE_LINK,
@@ -326,6 +340,12 @@ class ProviderCommerceService:
             return []
         candidates: list[ProviderPackageCandidate] = []
         for index, candidate in enumerate(output.candidates, start=1):
+            checkout_url = candidate.checkout_url
+            source_url = candidate.source_url
+            if _is_disallowed_checkout_url(checkout_url) or _is_disallowed_checkout_url(source_url):
+                continue
+            if not _agent_validation_claim_is_sufficient(candidate):
+                continue
             try:
                 candidates.append(
                     ProviderPackageCandidate(
@@ -334,11 +354,14 @@ class ProviderCommerceService:
                         description=candidate.description,
                         provider=_provider_for_name(candidate.provider_name),
                         provider_name=candidate.provider_name,
-                        checkout_url=candidate.checkout_url,
-                        source_url=candidate.source_url,
+                        checkout_url=checkout_url,
+                        source_url=source_url,
                         confidence=_normalize_confidence(candidate.confidence),
                         price_summary=candidate.price_summary,
                         cancellation_summary=candidate.cancellation_summary,
+                        validation_summary=candidate.validation_summary,
+                        source_type=candidate.source_type,
+                        relevance_rationale=candidate.relevance_rationale,
                         caveats=[
                             *candidate.caveats,
                             "External checkout; final purchase happens outside Wanderlust.",
@@ -398,6 +421,9 @@ class GeminiProviderPackageSearchClient:
                             "confidence": "high|medium|low",
                             "price_summary": "price if source states one",
                             "cancellation_summary": "refund/cancellation caveat if source states one",
+                            "validation_summary": "how you checked the page was reachable, relevant, and not an error page",
+                            "source_type": "official|authorized_reseller|known_provider|public_stripe_link|provider_discovery",
+                            "relevance_rationale": "why this page is specifically about the selected activity",
                             "caveats": ["uncertainty or availability caveats"],
                             "stripe_backed": False,
                         }
@@ -407,8 +433,11 @@ class GeminiProviderPackageSearchClient:
                 "guardrails": [
                     "Do not return unrelated city-wide products.",
                     "Prefer official venue, authorized reseller, known travel provider, or public Stripe links.",
-                    "Do not invent price, availability, refund terms, or checkout URLs.",
+                    "Visually or textually validate that each checkout_url/source_url resolves to a valid page, is not a 404/not-found/error page, and is relevant to the selected activity.",
+                    "Do not use Google search result pages, generic search pages, dead links, or unrelated provider homepages as checkout_url.",
+                    "Do not invent price, availability, refund terms, validation evidence, or checkout URLs.",
                     "Only return HTTPS URLs.",
+                    "If you cannot validate a candidate page, omit it instead of guessing.",
                     f"Return at most {limit} candidates.",
                 ],
             },
@@ -439,6 +468,10 @@ def _provider_for_name(provider_name: str) -> CheckoutProvider:
         return CheckoutProvider.KLOOK
     if "pelago" in normalized:
         return CheckoutProvider.PELAGO
+    if "tiqets" in normalized:
+        return CheckoutProvider.TIQETS
+    if "headout" in normalized:
+        return CheckoutProvider.HEADOUT
     if "stripe" in normalized:
         return CheckoutProvider.STRIPE_LINK
     return CheckoutProvider.OFFICIAL
@@ -456,6 +489,37 @@ def _parse_json_response(text: str) -> dict:
         if stripped.lower().startswith("json"):
             stripped = stripped[4:].strip()
     return json.loads(stripped)
+
+
+def _is_disallowed_checkout_url(value: str) -> bool:
+    parsed = urlparse(value)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    query = parsed.query.lower()
+    if parsed.scheme != "https" or not host:
+        return True
+    if "google." in host and ("/search" in path or "q=" in query):
+        return True
+    if any(token in path for token in ("404", "not-found", "notfound", "error")):
+        return True
+    return False
+
+
+def _agent_validation_claim_is_sufficient(candidate: AgenticProviderPackageCandidate) -> bool:
+    validation = (candidate.validation_summary or "").strip().lower()
+    rationale = (candidate.relevance_rationale or "").strip().lower()
+    source_type = (candidate.source_type or "").strip().lower()
+    if not validation or not rationale:
+        return False
+    if "not found" in validation or "404" in validation or "unreachable" in validation:
+        return False
+    return source_type in {
+        "official",
+        "authorized_reseller",
+        "known_provider",
+        "public_stripe_link",
+        "provider_discovery",
+    }
 
 
 class StripeCommerceService(ProviderCommerceService):
