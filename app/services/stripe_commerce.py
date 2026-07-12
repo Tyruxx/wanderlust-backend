@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from enum import Enum
+from html import unescape
 from typing import Protocol
 from urllib.parse import quote_plus, urlparse
 
+import httpx
 from google import genai
 from pydantic import BaseModel, Field, field_validator
 
@@ -111,6 +114,95 @@ class ProviderPackageSearchClient(Protocol):
     ) -> AgenticProviderPackageOutput: ...
 
 
+class LinkValidationEvidence(BaseModel):
+    valid: bool
+    summary: str
+    source_type: str | None = None
+    relevance_rationale: str | None = None
+    final_url: str | None = None
+
+
+class ProviderLinkContentValidator:
+    MAX_BYTES = 180_000
+    ERROR_TERMS = ("404", "not found", "page not found", "access denied", "forbidden")
+
+    def __init__(self, *, http_client: httpx.Client | None = None) -> None:
+        settings = get_settings()
+        self.http_client = http_client or httpx.Client(
+            timeout=min(settings.request_timeout_seconds, 8),
+            follow_redirects=True,
+            max_redirects=4,
+        )
+
+    def validate(self, *, url: str, activity_name: str, region: str) -> LinkValidationEvidence:
+        if _is_disallowed_checkout_url(url):
+            return LinkValidationEvidence(valid=False, summary="URL failed deterministic safety checks.")
+        try:
+            response = self.http_client.get(
+                url,
+                headers={
+                    "User-Agent": "WanderlustTripBot/1.0 (+package-link-validation)",
+                    "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
+                },
+            )
+        except Exception:
+            return LinkValidationEvidence(valid=False, summary="URL could not be reached during validation.")
+        final_url = str(response.url)
+        if response.status_code >= 400 or _is_disallowed_checkout_url(final_url):
+            return LinkValidationEvidence(
+                valid=False,
+                summary=f"URL returned HTTP {response.status_code} or redirected to a disallowed page.",
+                final_url=final_url,
+            )
+        content_type = response.headers.get("content-type", "").lower()
+        if not any(token in content_type for token in ("text/html", "text/plain", "application/xhtml")):
+            return LinkValidationEvidence(
+                valid=False,
+                summary="URL did not return a readable HTML/text page.",
+                final_url=final_url,
+            )
+        raw = response.content[: self.MAX_BYTES]
+        text = _page_text_snippet(raw.decode(response.encoding or "utf-8", errors="ignore"))
+        lowered = text.lower()
+        if any(term in lowered[:2000] for term in self.ERROR_TERMS):
+            return LinkValidationEvidence(
+                valid=False,
+                summary="URL content looks like an error or unavailable page.",
+                final_url=final_url,
+            )
+        activity_terms = _important_terms(activity_name)
+        region_terms = _important_terms(region)
+        provider_host = urlparse(final_url).netloc.lower()
+        activity_matches = [term for term in activity_terms if term in lowered]
+        region_matches = [term for term in region_terms if term in lowered]
+        officialish = any(term in provider_host for term in ("getyourguide", "viator", "klook", "pelago", "tiqets", "headout", "stripe"))
+        if not activity_matches and len(activity_terms) > 0:
+            return LinkValidationEvidence(
+                valid=False,
+                summary="Validated page content did not mention the selected activity.",
+                final_url=final_url,
+            )
+        if not region_matches and not officialish and region_terms:
+            return LinkValidationEvidence(
+                valid=False,
+                summary="Validated page content did not mention the activity region or a known provider.",
+                final_url=final_url,
+            )
+        source_type = "known_provider" if officialish else "official"
+        rationale_parts = []
+        if activity_matches:
+            rationale_parts.append(f"matched activity terms: {', '.join(activity_matches[:4])}")
+        if region_matches:
+            rationale_parts.append(f"matched region terms: {', '.join(region_matches[:3])}")
+        return LinkValidationEvidence(
+            valid=True,
+            summary="Fetched and checked the page content for reachability and activity relevance.",
+            source_type=source_type,
+            relevance_rationale="; ".join(rationale_parts) or "Page belongs to a known travel provider and is scoped by the activity query.",
+            final_url=final_url,
+        )
+
+
 class ProviderCheckoutRequest(BaseModel):
     package_id: str = Field(min_length=1)
     checkout_url: str
@@ -144,8 +236,14 @@ class ProviderCommerceService:
     have a seller/Connect/payment-link relationship for.
     """
 
-    def __init__(self, *, search_client: ProviderPackageSearchClient | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        search_client: ProviderPackageSearchClient | None = None,
+        link_validator: ProviderLinkContentValidator | None = None,
+    ) -> None:
         self.search_client = search_client or GeminiProviderPackageSearchClient()
+        self.link_validator = link_validator or ProviderLinkContentValidator()
         self.workflows = build_wanderlust_adk_workflows(get_settings().gemini_model)
 
     def search_packages(
@@ -346,6 +444,19 @@ class ProviderCommerceService:
                 continue
             if not _agent_validation_claim_is_sufficient(candidate):
                 continue
+            checkout_validation = self.link_validator.validate(
+                url=checkout_url, activity_name=activity_name, region=region
+            )
+            source_validation = checkout_validation
+            if not checkout_validation.valid and source_url != checkout_url:
+                source_validation = self.link_validator.validate(
+                    url=source_url, activity_name=activity_name, region=region
+                )
+            validation = checkout_validation if checkout_validation.valid else source_validation
+            if not validation.valid:
+                continue
+            checkout_url = validation.final_url or checkout_url
+            source_url = source_validation.final_url or source_url
             try:
                 candidates.append(
                     ProviderPackageCandidate(
@@ -359,9 +470,9 @@ class ProviderCommerceService:
                         confidence=_normalize_confidence(candidate.confidence),
                         price_summary=candidate.price_summary,
                         cancellation_summary=candidate.cancellation_summary,
-                        validation_summary=candidate.validation_summary,
-                        source_type=candidate.source_type,
-                        relevance_rationale=candidate.relevance_rationale,
+                        validation_summary=validation.summary,
+                        source_type=validation.source_type or candidate.source_type,
+                        relevance_rationale=validation.relevance_rationale or candidate.relevance_rationale,
                         caveats=[
                             *candidate.caveats,
                             "External checkout; final purchase happens outside Wanderlust.",
@@ -456,6 +567,23 @@ class GeminiProviderPackageSearchClient:
         if not text:
             raise RuntimeError("Google Search grounding returned no package output.")
         return AgenticProviderPackageOutput.model_validate(_parse_json_response(text))
+
+
+def _page_text_snippet(html: str) -> str:
+    text = re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=re.I | re.S)
+    text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = unescape(text)
+    return re.sub(r"\s+", " ", text).strip()[:8000]
+
+
+def _important_terms(value: str) -> list[str]:
+    ignored = {"the", "and", "with", "for", "from", "tour", "ticket", "tickets", "package", "packages"}
+    terms = []
+    for term in re.findall(r"[a-z0-9]+", value.lower()):
+        if len(term) >= 3 and term not in ignored and term not in terms:
+            terms.append(term)
+    return terms[:8]
 
 
 def _provider_for_name(provider_name: str) -> CheckoutProvider:

@@ -107,6 +107,22 @@ class PlacesAutocompleteResponse(BaseModel):
     suggestions: list[PlacesAutocompleteSuggestionSchema]
 
 
+class PlaceDetailsResponse(BaseModel):
+    place_id: str
+    name: str
+    formatted_address: str = ""
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class VenueContactResponse(BaseModel):
+    venue_name: str
+    contact: str | None = None
+    source: str | None = None
+    confidence: str = "low"
+    manual_input_required: bool = True
+
+
 class StopCoordinateSchema(BaseModel):
     lat: float
     lng: float

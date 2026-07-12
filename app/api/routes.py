@@ -26,9 +26,11 @@ from app.api.schemas import (
     ItineraryCreateRequest,
     ItineraryUpdateRequest,
     LocationEventRequest,
+    PlaceDetailsResponse,
     PlacesAutocompleteResponse,
     PlacesAutocompleteSuggestionSchema,
     PreferenceUpdateRequest,
+    VenueContactResponse,
     RecoveryDecisionResponse,
     RouteRequest,
     RouteSegmentSchema,
@@ -123,6 +125,30 @@ def reset_preferences(
     return reset
 
 
+@router.get("/venues/contact", response_model=VenueContactResponse)
+def resolve_venue_contact(
+    venue_name: str = Query(min_length=1, max_length=200),
+    region: str = Query(default="", max_length=160),
+):
+    logger.info("resolve_venue_contact venue=%s", venue_name)
+    try:
+        contact, source = GoogleMapsClient().resolve_venue_contact(venue_name, region=region)
+    except MapsIntegrationError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    except Exception:
+        logger.exception("resolve_venue_contact failed venue=%s", venue_name)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="Venue contact lookup unavailable."
+        )
+    return VenueContactResponse(
+        venue_name=venue_name,
+        contact=contact,
+        source=source,
+        confidence="high" if contact else "low",
+        manual_input_required=contact is None,
+    )
+
+
 @router.get("/places/autocomplete", response_model=PlacesAutocompleteResponse)
 def places_autocomplete(
     input: str = Query(min_length=1, max_length=200),
@@ -144,6 +170,29 @@ def places_autocomplete(
             PlacesAutocompleteSuggestionSchema(place_id=s.place_id, description=s.description)
             for s in suggestions
         ],
+    )
+
+
+@router.get("/places/{place_id}", response_model=PlaceDetailsResponse)
+def place_details(place_id: str):
+    logger.info("place_details place_id=%s", place_id)
+    try:
+        details = GoogleMapsClient().place_details(place_id)
+    except MapsIntegrationError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    except Exception:
+        logger.exception("place_details failed place_id=%s", place_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="Place details service unavailable."
+        )
+    if details is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Place not found.")
+    return PlaceDetailsResponse(
+        place_id=details.place_id,
+        name=details.name,
+        formatted_address=details.formatted_address,
+        latitude=details.latitude,
+        longitude=details.longitude,
     )
 
 

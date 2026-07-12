@@ -50,6 +50,19 @@ class PlacesAutocompleteSuggestion:
     description: str
 
 
+@dataclass(frozen=True)
+class PlaceDetails:
+    place_id: str
+    name: str
+    formatted_address: str
+    latitude: float | None = None
+    longitude: float | None = None
+    national_phone_number: str | None = None
+    international_phone_number: str | None = None
+    google_maps_uri: str | None = None
+    website_uri: str | None = None
+
+
 class GoogleMapsClient:
     PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
     PLACES_DETAILS_URL = "https://places.googleapis.com/v1/places"
@@ -157,12 +170,63 @@ class GoogleMapsClient:
             suggestions.append(PlacesAutocompleteSuggestion(place_id=place_id, description=description))
         return suggestions[:max_results]
 
+    def place_details(self, place_id: str) -> PlaceDetails | None:
+        self._require_api_key()
+        safe_place_id = place_id.strip()
+        if not safe_place_id:
+            return None
+        response = self.http_client.get(
+            f"{self.PLACES_DETAILS_URL}/{safe_place_id}",
+            headers={
+                "X-Goog-Api-Key": self.api_key,
+                "X-Goog-FieldMask": ",".join(
+                    [
+                        "id",
+                        "displayName",
+                        "formattedAddress",
+                        "location",
+                        "nationalPhoneNumber",
+                        "internationalPhoneNumber",
+                        "googleMapsUri",
+                        "websiteUri",
+                    ]
+                ),
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data:
+            return None
+        display_name = data.get("displayName", {})
+        location = data.get("location", {})
+        return PlaceDetails(
+            place_id=str(data.get("id") or safe_place_id),
+            name=str(display_name.get("text") or data.get("name") or "Selected place"),
+            formatted_address=str(data.get("formattedAddress") or ""),
+            latitude=float(location["latitude"]) if "latitude" in location else None,
+            longitude=float(location["longitude"]) if "longitude" in location else None,
+            national_phone_number=data.get("nationalPhoneNumber"),
+            international_phone_number=data.get("internationalPhoneNumber"),
+            google_maps_uri=data.get("googleMapsUri"),
+            website_uri=data.get("websiteUri"),
+        )
+
     def find_phone_number(self, query: str, *, region: str = "") -> str | None:
         candidates = self.text_search(query, region=region, max_result_count=1)
         if not candidates:
             return None
         candidate = candidates[0]
         return candidate.international_phone_number or candidate.national_phone_number
+
+    def resolve_venue_contact(self, venue_name: str, *, region: str = "") -> tuple[str | None, str | None]:
+        candidates = self.text_search(venue_name, region=region, max_result_count=1)
+        if not candidates:
+            return None, None
+        candidate = candidates[0]
+        return (
+            candidate.international_phone_number or candidate.national_phone_number,
+            candidate.google_maps_uri or candidate.website_uri,
+        )
 
     _ROUTES_MODE_MAP = {
         "WALKING": "WALK",

@@ -24,6 +24,7 @@ from app.services.manual_call import ManualCallRequest, ManualCallService
 from app.services.stripe_commerce import (
     AgenticProviderPackageCandidate,
     AgenticProviderPackageOutput,
+    LinkValidationEvidence,
     ProviderCheckoutRequest,
     ProviderPackageSearchRequest,
     StripeCommerceService,
@@ -159,7 +160,9 @@ def test_provider_commerce_returns_activity_scoped_external_checkout_options() -
 
 
 def test_provider_commerce_returns_agentic_source_backed_options() -> None:
-    service = StripeCommerceService(search_client=FakePackageSearchClient())
+    service = StripeCommerceService(
+        search_client=FakePackageSearchClient(), link_validator=FakeLinkValidator()
+    )
     itinerary = _commerce_itinerary()
 
     response = service.search_packages(
@@ -277,6 +280,17 @@ def _commerce_itinerary() -> Itinerary:
             )
         ],
     )
+
+
+class FakeLinkValidator:
+    def validate(self, *, url: str, activity_name: str, region: str) -> LinkValidationEvidence:
+        return LinkValidationEvidence(
+            valid=True,
+            summary="Fetched and checked test page content for activity relevance.",
+            source_type="official",
+            relevance_rationale=f"{activity_name} appears on the fetched page.",
+            final_url=url,
+        )
 
 
 class FakePackageSearchClient:

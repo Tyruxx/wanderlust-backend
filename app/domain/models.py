@@ -201,6 +201,12 @@ class DayRule(DomainModel):
     end_date: date | None = None
     start_place: str
     end_place: str
+    start_place_id: str | None = None
+    end_place_id: str | None = None
+    start_latitude: float | None = Field(default=None, ge=-90, le=90)
+    start_longitude: float | None = Field(default=None, ge=-180, le=180)
+    end_latitude: float | None = Field(default=None, ge=-90, le=90)
+    end_longitude: float | None = Field(default=None, ge=-180, le=180)
     start_time: time
     end_time: time
 
