@@ -1,6 +1,6 @@
 # Wanderlust Trip Backend
 
-FastAPI backend for the Flutter app in `../smart_travel_itinerary_flutter`.
+FastAPI backend for the Flutter app in `../wanderlust-frontend-flutter`.
 
 Backend uses Google ADK 2.0 for agentic planning and active-itinerary workflows.
 Production backend features run on Cloud Run and store backend app state in
@@ -12,7 +12,7 @@ local development and tests.
 ## Local Setup
 
 ```sh
-cd backend
+cd wanderlust-backend
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -69,7 +69,7 @@ For the full production checklist, see `../PRODUCTION_SETUP.md`.
 ### 1. Prepare Google Cloud Resources
 
 ```sh
-cd backend
+cd wanderlust-backend
 GOOGLE_CLOUD_PROJECT=your-project-id \
 GOOGLE_CLOUD_REGION=asia-southeast1 \
 ./scripts/setup_gcp_resources.sh
@@ -95,7 +95,7 @@ printf '%s' "$TWILIO_FROM_NUMBER" | gcloud secrets versions add twilio-from-numb
 ### 3. Deploy With Script
 
 ```sh
-cd backend
+cd wanderlust-backend
 GOOGLE_CLOUD_PROJECT=your-project-id \
 GOOGLE_CLOUD_REGION=asia-southeast1 \
 ./scripts/deploy_cloud_run.sh
@@ -120,7 +120,7 @@ hotline override, or full transcript should be stored.
 ### 4. Deploy With Terraform
 
 ```sh
-cd backend
+cd wanderlust-backend
 export GOOGLE_CLOUD_PROJECT=your-project-id
 export GOOGLE_CLOUD_REGION=asia-southeast1
 export IMAGE="$GOOGLE_CLOUD_REGION-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/wanderlust/wanderlust-backend:$(git rev-parse --short HEAD)"
@@ -157,7 +157,7 @@ flutter run \
 For App Store/TestFlight builds, prefer:
 
 ```sh
-cd ../smart_travel_itinerary_flutter
+cd ../wanderlust-frontend-flutter
 PUBLIC_BACKEND_BASE_URL=https://YOUR_CLOUD_RUN_URL \
 GOOGLE_MAPS_IOS_API_KEY=YOUR_IOS_MAPS_KEY \
 ./scripts/build_ios_app_store.sh
