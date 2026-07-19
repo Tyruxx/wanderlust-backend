@@ -242,6 +242,15 @@ def generate_itinerary(
             brief=request.brief,
             preferences=preferences,
         )
+    except MapsIntegrationError as exc:
+        logger.exception(
+            "generate_itinerary Maps integration unavailable for user=%s",
+            current_user.uid,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
     except PlanningWorkflowError as exc:
         logger.exception(
             "generate_itinerary failed for user=%s brief=%s", current_user.uid, request.brief

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 import httpx
@@ -8,6 +9,9 @@ from pydantic import BaseModel
 
 from app.core.settings import get_settings
 from app.domain.models import SourceConfidence, SourceEvidence, SourceType
+
+
+logger = logging.getLogger(__name__)
 
 
 class MapsIntegrationError(RuntimeError):
@@ -114,7 +118,7 @@ class GoogleMapsClient:
                 "maxResultCount": max_result_count,
             },
         )
-        response.raise_for_status()
+        _raise_for_status(response, operation="place search")
         return [_candidate_from_place(place) for place in response.json().get("places", [])]
 
     def geocode(self, address: str) -> Coordinates | None:
@@ -123,7 +127,7 @@ class GoogleMapsClient:
             self.GEOCODE_URL,
             params={"address": address, "key": self.api_key},
         )
-        response.raise_for_status()
+        _raise_for_status(response, operation="geocoding")
         results = response.json().get("results", [])
         if not results:
             return None
@@ -142,7 +146,7 @@ class GoogleMapsClient:
                 "location.longitude": coordinates.longitude,
             },
         )
-        response.raise_for_status()
+        _raise_for_status(response, operation="weather lookup")
         return response.json()
 
     def places_autocomplete(
@@ -161,7 +165,7 @@ class GoogleMapsClient:
                 "key": self.api_key,
             },
         )
-        response.raise_for_status()
+        _raise_for_status(response, operation="place autocomplete")
         data = response.json()
         suggestions = []
         for prediction in data.get("predictions", []):
@@ -193,7 +197,7 @@ class GoogleMapsClient:
                 ),
             },
         )
-        response.raise_for_status()
+        _raise_for_status(response, operation="place details")
         data = response.json()
         if not data:
             return None
@@ -274,7 +278,7 @@ class GoogleMapsClient:
                 "travelMode": routes_mode,
             },
         )
-        response.raise_for_status()
+        _raise_for_status(response, operation="route computation")
         return response.json()
 
     def _require_api_key(self) -> None:
@@ -298,3 +302,36 @@ def _candidate_from_place(place: dict[str, Any]) -> CandidatePlace:
         latitude=location.get("latitude"),
         longitude=location.get("longitude"),
     )
+
+
+def _raise_for_status(response: httpx.Response, *, operation: str) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        reason = ""
+        try:
+            error = response.json().get("error", {})
+            details = error.get("details", [])
+            reason = next(
+                (
+                    str(detail.get("reason"))
+                    for detail in details
+                    if isinstance(detail, dict) and detail.get("reason")
+                ),
+                str(error.get("status") or ""),
+            )
+        except (TypeError, ValueError):
+            pass
+        logger.warning(
+            "Google Maps %s failed status=%s reason=%s",
+            operation,
+            response.status_code,
+            reason or "unknown",
+        )
+        if reason in {"API_KEY_INVALID", "API_KEY_EXPIRED"}:
+            message = "Google Maps credentials are temporarily unavailable."
+        elif response.status_code == 429 or reason == "RATE_LIMIT_EXCEEDED":
+            message = "Google Maps is temporarily rate limited."
+        else:
+            message = f"Google Maps {operation} is temporarily unavailable."
+        raise MapsIntegrationError(message) from exc

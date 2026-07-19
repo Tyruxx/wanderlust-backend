@@ -34,7 +34,7 @@ from app.services.active_events import ActiveEventWorkflowService
 from app.services.auth import VerifiedUser
 from app.services.booking_calls import BookingCallService
 from app.core.settings import get_settings
-from app.services.maps import Coordinates
+from app.services.maps import Coordinates, MapsIntegrationError
 from app.services.repositories import AuditLogEntry
 from app.services.planning import PlanningResult
 
@@ -191,6 +191,28 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(len(self.itineraries.items), 1)
         self.assertEqual(len(self.evidence.items), 1)
         self.assertEqual(len(self.recommendations.items), 1)
+
+    def test_generate_itinerary_maps_outage_is_service_unavailable(self) -> None:
+        self.preferences.create(
+            "user-1",
+            TravelPreferences(
+                user_id="user-1",
+                version=7,
+                onboarding_required=False,
+            ),
+        )
+        app.dependency_overrides[get_planning_service] = lambda: FailingMapsPlanningService()
+
+        response = self.client.post(
+            "/v1/itineraries/generate",
+            json=itinerary_payload("Generated"),
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json()["detail"],
+            "Google Maps credentials are temporarily unavailable.",
+        )
 
     def test_chat_timing_mutation_persists_and_rewrite_proposal_does_not(self) -> None:
         self.preferences.create(
@@ -834,6 +856,11 @@ class FakeRewriteChatAgent:
                 "proposed_itinerary": itinerary,
             },
         }
+
+
+class FailingMapsPlanningService:
+    def generate_itinerary(self, **kwargs) -> PlanningResult:
+        raise MapsIntegrationError("Google Maps credentials are temporarily unavailable.")
 
 
 class FakePlanningService:

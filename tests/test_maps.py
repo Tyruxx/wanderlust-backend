@@ -5,7 +5,7 @@ import unittest
 
 import httpx
 
-from app.services.maps import Coordinates, GoogleMapsClient
+from app.services.maps import Coordinates, GoogleMapsClient, MapsIntegrationError
 
 
 class GoogleMapsClientTests(unittest.TestCase):
@@ -74,6 +74,33 @@ class GoogleMapsClientTests(unittest.TestCase):
         self.assertEqual(weather["weatherCondition"]["description"]["text"], "Warm")
         self.assertTrue(any(GoogleMapsClient.GEOCODE_URL in url for url in urls))
         self.assertTrue(any(GoogleMapsClient.WEATHER_CURRENT_URL in url for url in urls))
+
+    def test_expired_key_error_is_sanitized(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                request=request,
+                json={
+                    "error": {
+                        "status": "INVALID_ARGUMENT",
+                        "message": "API key expired. Secret value must not reach clients.",
+                        "details": [{"reason": "API_KEY_INVALID"}],
+                    }
+                },
+            )
+
+        client = GoogleMapsClient(
+            api_key="expired-key",
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+
+        with self.assertRaisesRegex(
+            MapsIntegrationError,
+            "Google Maps credentials are temporarily unavailable",
+        ) as context:
+            client.text_search("food", region="Singapore")
+
+        self.assertNotIn("Secret value", str(context.exception))
 
 
 if __name__ == "__main__":
