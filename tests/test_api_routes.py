@@ -496,6 +496,27 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(len(body["segments"]), 1)
         self.assertEqual(body["segments"][0]["encoded_polyline"], "encoded-google-route")
 
+    def test_direct_route_compute_selects_fastest_successful_mode_per_leg(self) -> None:
+        with patch("app.api.routes.GoogleMapsClient", lambda: FakeMultiModeRouteMapsClient()):
+            response = self.client.post(
+                "/v1/routes/compute",
+                json={
+                    "region": "Singapore",
+                    "modes": ["WALKING", "TRANSIT", "DRIVING"],
+                    "stops": [
+                        {"name": "Singapore Zoo"},
+                        {"name": "River Wonders"},
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["segments"]), 1)
+        self.assertEqual(body["segments"][0]["mode"], "TRANSIT")
+        self.assertEqual(body["segments"][0]["duration_seconds"], 420)
+        self.assertEqual(body["segments"][0]["encoded_polyline"], "route-TRANSIT")
+
     def test_ask_anything_routes_to_call_or_package_ctas_without_side_effects(self) -> None:
         self.preferences.create(
             "user-1",
@@ -763,6 +784,29 @@ class FakeRouteMapsClient:
                     "duration": "540s",
                     "distanceMeters": 900,
                     "polyline": {"encodedPolyline": "encoded-google-route"},
+                }
+            ]
+        }
+
+
+class FakeMultiModeRouteMapsClient(FakeRouteMapsClient):
+    def compute_route(
+        self,
+        *,
+        origin: Coordinates,
+        destination: Coordinates,
+        travel_mode: str = "WALK",
+    ) -> dict[str, object]:
+        if travel_mode == "DRIVING":
+            raise RuntimeError("Driving route unavailable")
+        durations = {"WALKING": 900, "TRANSIT": 420}
+        duration = durations[travel_mode]
+        return {
+            "routes": [
+                {
+                    "duration": f"{duration}s",
+                    "distanceMeters": 900,
+                    "polyline": {"encodedPolyline": f"route-{travel_mode}"},
                 }
             ]
         }

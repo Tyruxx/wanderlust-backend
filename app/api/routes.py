@@ -379,7 +379,8 @@ def _compute_route_segments_for_stops(
     for i in range(len(stop_coords) - 1):
         origin = Coordinates(latitude=stop_coords[i].lat, longitude=stop_coords[i].lng)
         destination = Coordinates(latitude=stop_coords[i + 1].lat, longitude=stop_coords[i + 1].lng)
-        for mode in modes:
+        candidates: list[tuple[int, int, RouteSegmentSchema]] = []
+        for mode_index, mode in enumerate(modes):
             try:
                 route = client.compute_route(
                     origin=origin,
@@ -395,20 +396,26 @@ def _compute_route_segments_for_stops(
                 distance_meters = route_data.get("distanceMeters", 0)
                 polyline = route_data.get("polyline", {})
                 encoded = polyline.get("encodedPolyline", "")
-                segments.append(
-                    RouteSegmentSchema(
-                        from_stop_index=stop_coords[i].index,
-                        to_stop_index=stop_coords[i + 1].index,
-                        mode=mode,
-                        duration_seconds=duration_seconds,
-                        distance_meters=distance_meters,
-                        encoded_polyline=encoded,
+                candidates.append(
+                    (
+                        duration_seconds,
+                        mode_index,
+                        RouteSegmentSchema(
+                            from_stop_index=stop_coords[i].index,
+                            to_stop_index=stop_coords[i + 1].index,
+                            mode=mode,
+                            duration_seconds=duration_seconds,
+                            distance_meters=distance_meters,
+                            encoded_polyline=encoded,
+                        ),
                     )
                 )
-                break
             except Exception as exc:
                 logger.warning("compute_route failed %s->%s mode=%s: %s", i, i + 1, mode, exc)
                 continue
+        if candidates:
+            _, _, selected = min(candidates, key=lambda candidate: (candidate[0], candidate[1]))
+            segments.append(selected)
 
     return RouteSegmentsResponse(segments=segments, stop_coordinates=stop_coords)
 
