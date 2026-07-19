@@ -19,6 +19,7 @@ from app.services.planning import (
     ChatAgentService,
     GroundedCitation,
     GroundedSearchCandidate,
+    _is_generic_activity_name,
     _planner_prompt,
 )
 from app.services.booking_calls import BookingCallService
@@ -312,6 +313,44 @@ class PlanningWorkflowTests(unittest.TestCase):
         self.assertIn("Activity time_window values must account for travel time", prompt)
         self.assertIn("travel_time_assumption_minutes", prompt)
         self.assertIn("DRIVING", prompt)
+        self.assertIn("exact proper name", prompt)
+        self.assertIn("Lunch at a city name", prompt)
+
+    def test_blank_optional_day_places_do_not_override_planner_locations(self) -> None:
+        planner = FakePlannerClient()
+        service = ADKPlanningWorkflowService(
+            maps_client=FakeMapsClient(),
+            planner_client=planner,
+        )
+        brief = TripBrief(
+            region="Singapore",
+            description="Specific food venues and architecture.",
+            trip_length_days=1,
+            day_rules=[
+                DayRule(
+                    start_day=1,
+                    end_day=1,
+                    start_time=time(10, 0),
+                    end_time=time(18, 0),
+                ),
+            ],
+        )
+
+        result = service.generate_itinerary(
+            user_id="user-1",
+            brief=brief,
+            preferences=TravelPreferences(user_id="user-1", onboarding_required=False),
+        )
+
+        self.assertEqual(result.itinerary.days[0].start_location, "Hotel")
+        self.assertEqual(result.itinerary.days[0].end_location, "Hotel")
+
+    def test_generic_activity_placeholders_are_rejected(self) -> None:
+        self.assertTrue(_is_generic_activity_name("Lunch in Singapore", "Singapore"))
+        self.assertTrue(_is_generic_activity_name("City Center", "Singapore"))
+        self.assertTrue(_is_generic_activity_name("Museum Visit", "Singapore"))
+        self.assertFalse(_is_generic_activity_name("Maxwell Food Centre", "Singapore"))
+        self.assertFalse(_is_generic_activity_name("National Gallery Singapore", "Singapore"))
 
     def test_chat_gap_insert_overrides_model_chosen_index(self) -> None:
         service = ChatAgentService()

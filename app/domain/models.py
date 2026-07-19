@@ -199,8 +199,8 @@ class DayRule(DomainModel):
     end_day: int = Field(ge=1)
     start_date: date | None = None
     end_date: date | None = None
-    start_place: str
-    end_place: str
+    start_place: str = ""
+    end_place: str = ""
     start_place_id: str | None = None
     end_place_id: str | None = None
     start_latitude: float | None = Field(default=None, ge=-90, le=90)
